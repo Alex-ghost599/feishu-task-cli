@@ -33,11 +33,15 @@ class MemoryKeyring:
         self.values.pop((service, username), None)
 
 
-def _settings(*, headless_token: str | None = None) -> Settings:
+def _settings(
+    *,
+    headless_token: str | None = None,
+    app_secret: str | None = "synthetic-app-secret",
+) -> Settings:
     return Settings(
         app_id="cli_synthetic",
         account_id="account_synthetic",
-        app_secret=None,
+        app_secret=None if app_secret is None else SecretStr(app_secret),
         user_access_token=None if headless_token is None else SecretStr(headless_token),
     )
 
@@ -60,9 +64,24 @@ def test_explicit_localhost_callback_exchanges_code_and_stores_tokens() -> None:
     store = _store()
 
     def transport(request: httpx.Request) -> httpx.Response:
-        assert str(request.url) == "https://open.feishu.cn/open-apis/authen/v2/oauth/token"
-        assert json.loads(request.content)["code"] == "synthetic-code"
-        return httpx.Response(200, json=json.loads(TOKEN_FIXTURE.read_text()))
+        if request.url.path.endswith("/oauth/token"):
+            body = json.loads(request.content)
+            assert body["code"] == "synthetic-code"
+            assert body["client_secret"] == "synthetic-app-secret"
+            return httpx.Response(200, json=json.loads(TOKEN_FIXTURE.read_text()))
+        assert request.url.path == "/open-apis/authen/v1/user_info"
+        assert request.headers["Authorization"] == "Bearer synthetic-access"
+        return httpx.Response(
+            200,
+            json={
+                "code": 0,
+                "data": {
+                    "tenant_id": "tenant_synthetic",
+                    "union_id": "account_synthetic",
+                    "open_id": "actor_synthetic",
+                },
+            },
+        )
 
     def browser_open(url: str) -> bool:
         query = urllib.parse.parse_qs(urllib.parse.urlsplit(url).query)
@@ -85,7 +104,7 @@ def test_explicit_localhost_callback_exchanges_code_and_stores_tokens() -> None:
         browser_open=browser_open,
     )
 
-    client.login(timeout=2)
+    client.login(timeout=2, scopes=("task:task:write",))
 
     assert store.get_access_token() == "synthetic-access"
     assert store.get_refresh_token() == "synthetic-refresh"
@@ -98,6 +117,7 @@ def test_authorization_url_matches_current_official_contract() -> None:
         client.authorization_url(
             redirect_uri="http://127.0.0.1:12345/callback",
             state="synthetic-state",
+            scopes=("task:task:write", "offline_access", "task:task:write"),
         )
     )
     query = urllib.parse.parse_qs(url.query)
@@ -107,7 +127,85 @@ def test_authorization_url_matches_current_official_contract() -> None:
     )
     assert query["client_id"] == ["cli_synthetic"]
     assert "app_id" not in query
-    assert "offline_access" in query["scope"][0].split()
+    assert query["scope"][0].split() == ["offline_access", "task:task:write"]
+
+
+@pytest.mark.parametrize(
+    "scopes",
+    [(), ("task:tasklist:read",), ("contact:user.base:readonly",), ("",)],
+)
+def test_authorization_url_rejects_missing_or_unallowlisted_task_scopes(
+    scopes: tuple[str, ...],
+) -> None:
+    client = OAuthClient(settings=_settings(), store=_store())
+
+    with pytest.raises(ValueError, match="scope"):
+        client.authorization_url(
+            redirect_uri="http://127.0.0.1:12345/callback",
+            state="synthetic-state",
+            scopes=scopes,
+        )
+
+
+@pytest.mark.parametrize("invalid_code", [None, "0", False])
+def test_token_success_requires_explicit_integer_zero_code(invalid_code: object) -> None:
+    calls = 0
+
+    def transport(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        payload = json.loads(TOKEN_FIXTURE.read_text())
+        if invalid_code is None:
+            payload.pop("code")
+        else:
+            payload["code"] = invalid_code
+        return httpx.Response(200, json=payload)
+
+    store = _store()
+    client = OAuthClient(
+        settings=_settings(),
+        store=store,
+        http_client=httpx.Client(transport=httpx.MockTransport(transport)),
+    )
+    with pytest.raises(OAuthError, match="rejected"):
+        client.exchange_code(code="synthetic-code", redirect_uri="http://127.0.0.1/callback")
+    assert calls == 1
+    assert store.get_access_token() is None
+
+
+@pytest.mark.parametrize("app_secret", [None, ""])
+def test_interactive_oauth_requires_app_secret_before_side_effects(
+    app_secret: str | None,
+) -> None:
+    store = _store()
+    store.set_refresh_token("synthetic-refresh")
+    http_calls = 0
+    browser_calls = 0
+
+    def transport(request: httpx.Request) -> httpx.Response:
+        nonlocal http_calls
+        http_calls += 1
+        return httpx.Response(500)
+
+    def browser_open(url: str) -> bool:
+        nonlocal browser_calls
+        browser_calls += 1
+        return True
+
+    client = OAuthClient(
+        settings=_settings(app_secret=app_secret),
+        store=store,
+        http_client=httpx.Client(transport=httpx.MockTransport(transport)),
+        browser_open=browser_open,
+    )
+    with pytest.raises(OAuthError, match="app secret"):
+        client.exchange_code(code="synthetic-code", redirect_uri="http://127.0.0.1/callback")
+    with pytest.raises(OAuthError, match="app secret"):
+        client.refresh()
+    with pytest.raises(OAuthError, match="app secret"):
+        client.login(timeout=0.01)
+    assert http_calls == 0
+    assert browser_calls == 0
 
 
 def test_refresh_retries_one_confirmed_connect_error_and_stores_rotation() -> None:
@@ -248,6 +346,38 @@ def test_status_fails_closed_when_resolved_union_id_differs_from_store_owner() -
         client.status()
 
 
+def test_exchange_verifies_owner_before_token_commit() -> None:
+    store = _store()
+    body_secret = "synthetic-remote-body-secret"
+
+    def transport(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/oauth/token"):
+            return httpx.Response(200, json=json.loads(TOKEN_FIXTURE.read_text()))
+        return httpx.Response(
+            200,
+            json={
+                "code": 0,
+                "data": {
+                    "tenant_id": "tenant_synthetic",
+                    "union_id": "different-account",
+                    "open_id": "actor_synthetic",
+                    "message": body_secret,
+                },
+            },
+        )
+
+    client = OAuthClient(
+        settings=_settings(),
+        store=store,
+        http_client=httpx.Client(transport=httpx.MockTransport(transport)),
+    )
+    with pytest.raises(OAuthError, match="account identity did not match") as caught:
+        client.exchange_code(code="synthetic-code", redirect_uri="http://127.0.0.1/callback")
+    assert store.get_access_token() is None
+    assert store.get_refresh_token() is None
+    assert body_secret not in repr(caught.value)
+
+
 def test_refresh_requires_rotated_refresh_token() -> None:
     store = _store()
     store.set_refresh_token("synthetic-old-refresh")
@@ -304,7 +434,19 @@ def test_callback_ignores_wrong_path_and_state_until_matching_callback() -> None
     store = _store()
 
     def transport(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(200, json=json.loads(TOKEN_FIXTURE.read_text()))
+        if request.url.path.endswith("/oauth/token"):
+            return httpx.Response(200, json=json.loads(TOKEN_FIXTURE.read_text()))
+        return httpx.Response(
+            200,
+            json={
+                "code": 0,
+                "data": {
+                    "tenant_id": "tenant_synthetic",
+                    "union_id": "account_synthetic",
+                    "open_id": "actor_synthetic",
+                },
+            },
+        )
 
     def browser_open(url: str) -> bool:
         query = urllib.parse.parse_qs(urllib.parse.urlsplit(url).query)
@@ -330,7 +472,7 @@ def test_callback_ignores_wrong_path_and_state_until_matching_callback() -> None
         http_client=httpx.Client(transport=httpx.MockTransport(transport)),
         browser_open=browser_open,
     )
-    client.login(timeout=2)
+    client.login(timeout=2, scopes=("task:task:write",))
     assert store.get_access_token() == "synthetic-access"
 
 
@@ -351,5 +493,5 @@ def test_matching_oauth_denial_raises_typed_error() -> None:
 
     client = OAuthClient(settings=_settings(), store=_store(), browser_open=browser_open)
     with pytest.raises(OAuthDeniedError) as caught:
-        client.login(timeout=2)
+        client.login(timeout=2, scopes=("task:task:write",))
     assert "secret" not in repr(caught.value)

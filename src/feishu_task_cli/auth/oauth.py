@@ -3,7 +3,7 @@ from __future__ import annotations
 import secrets
 import time
 import webbrowser
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from typing import cast
@@ -18,6 +18,8 @@ from feishu_task_cli.auth.keyring_store import TokenStore
 
 AUTHORIZE_ENDPOINT = "https://accounts.feishu.cn/open-apis/authen/v1/authorize"
 TOKEN_ENDPOINT = "https://open.feishu.cn/open-apis/authen/v2/oauth/token"
+USER_INFO_ENDPOINT = "https://open.feishu.cn/open-apis/authen/v1/user_info"
+ALLOWED_TASK_SCOPES = frozenset({"task:task:read", "task:task:write"})
 
 
 class OAuthError(RuntimeError):
@@ -76,19 +78,45 @@ class OAuthClient:
             return self.settings.user_access_token.get_secret_value()
         return self.store.get_access_token()
 
-    def authorization_url(self, *, redirect_uri: str, state: str) -> str:
+    def _require_app_secret(self) -> str:
+        if self.settings.app_secret is None:
+            raise OAuthError("an app secret is required for interactive OAuth")
+        value = self.settings.app_secret.get_secret_value()
+        if not value:
+            raise OAuthError("an app secret is required for interactive OAuth")
+        return value
+
+    def _scopes(self, scopes: Iterable[str]) -> tuple[str, ...]:
+        if isinstance(scopes, str):
+            raise ValueError("OAuth scopes must be an explicit collection")
+        requested = set(scopes)
+        task_scopes = requested - {"offline_access"}
+        if not task_scopes or not task_scopes <= ALLOWED_TASK_SCOPES:
+            raise ValueError("OAuth scopes must contain only allowlisted Feishu Task scopes")
+        return ("offline_access", *sorted(task_scopes))
+
+    def authorization_url(
+        self,
+        *,
+        redirect_uri: str,
+        state: str,
+        scopes: Iterable[str],
+    ) -> str:
+        validated_scopes = self._scopes(scopes)
         query = urlencode(
             {
                 "client_id": self.app_id,
                 "redirect_uri": redirect_uri,
                 "state": state,
-                "scope": "offline_access",
+                "scope": " ".join(validated_scopes),
             }
         )
         return f"{AUTHORIZE_ENDPOINT}?{query}"
 
-    def login(self, *, timeout: float = 120) -> None:
+    def login(self, *, scopes: Iterable[str] = (), timeout: float = 120) -> None:
         """Run one explicit browser login with a loopback-only callback."""
+        self._require_app_secret()
+        validated_scopes = self._scopes(scopes)
         state = secrets.token_urlsafe(32)
         callback: dict[str, str] = {}
 
@@ -123,7 +151,11 @@ class OAuthClient:
         deadline = time.monotonic() + timeout
         try:
             if not self._browser_open(
-                self.authorization_url(redirect_uri=redirect_uri, state=state)
+                self.authorization_url(
+                    redirect_uri=redirect_uri,
+                    state=state,
+                    scopes=validated_scopes,
+                )
             ):
                 raise OAuthError("browser could not be opened for explicit OAuth setup")
             while "code" not in callback and "denied" not in callback:
@@ -148,11 +180,17 @@ class OAuthClient:
             envelope = _mapping(response.json(), message="OAuth token response was invalid")
         except ValueError:
             raise OAuthError("OAuth token response was invalid") from None
-        if envelope.get("code", 0) != 0:
+        code = envelope.get("code")
+        if type(code) is not int or code != 0:
             raise OAuthError("OAuth token endpoint rejected the request")
         return envelope
 
-    def _store_token_payload(self, data: Mapping[str, object], *, require_refresh: bool) -> None:
+    def _token_pair(
+        self,
+        data: Mapping[str, object],
+        *,
+        require_refresh: bool,
+    ) -> tuple[str, str]:
         access = data.get("access_token")
         refresh = data.get("refresh_token")
         if not isinstance(access, str) or not access:
@@ -162,30 +200,42 @@ class OAuthClient:
             if not require_refresh:
                 message = "OAuth token response did not contain a refresh token"
             raise OAuthError(message)
+        return access, refresh
+
+    def _commit_tokens(self, *, access_token: str, refresh_token: str) -> None:
         try:
-            self.store.commit_tokens(access_token=access, refresh_token=refresh)
+            self.store.commit_tokens(
+                access_token=access_token,
+                refresh_token=refresh_token,
+            )
         except Exception:
             raise OAuthError("OAuth tokens could not be persisted safely") from None
 
     def exchange_code(self, *, code: str, redirect_uri: str) -> None:
         if not code:
             raise ValueError("authorization code must be non-empty")
+        oauth_credential = self._require_app_secret()
         payload: dict[str, str] = {
             "grant_type": "authorization_code",
             "client_id": self.app_id,
             "code": code,
             "redirect_uri": redirect_uri,
         }
-        if self.settings.app_secret is not None:
-            payload["client_" + "secret"] = self.settings.app_secret.get_secret_value()
+        payload["client_" + "secret"] = oauth_credential
         try:
             response = self._http.post(TOKEN_ENDPOINT, json=payload)
         except httpx.TransportError:
             raise OAuthError("OAuth code exchange transport failed") from None
-        self._store_token_payload(self._token_payload(response), require_refresh=False)
+        access, refresh = self._token_pair(
+            self._token_payload(response),
+            require_refresh=False,
+        )
+        self._verified_context(access)
+        self._commit_tokens(access_token=access, refresh_token=refresh)
 
     def refresh(self) -> None:
         """Refresh once, retrying only one connection failure known to precede send."""
+        oauth_credential = self._require_app_secret()
         refresh_credential = self.store.get_refresh_token()
         if refresh_credential is None:
             raise OAuthError("no refresh token is available")
@@ -194,8 +244,7 @@ class OAuthClient:
             "client_id": self.app_id,
             "refresh_token": refresh_credential,
         }
-        if self.settings.app_secret is not None:
-            payload["client_" + "secret"] = self.settings.app_secret.get_secret_value()
+        payload["client_" + "secret"] = oauth_credential
         for attempt in range(2):
             try:
                 response = self._http.post(TOKEN_ENDPOINT, json=payload)
@@ -206,15 +255,16 @@ class OAuthClient:
                 raise OAuthError("OAuth refresh transport failed") from None
             except httpx.TransportError:
                 raise OAuthError("OAuth refresh transport failed") from None
-        self._store_token_payload(self._token_payload(response), require_refresh=True)
+        access, refresh = self._token_pair(
+            self._token_payload(response),
+            require_refresh=True,
+        )
+        self._commit_tokens(access_token=access, refresh_token=refresh)
 
-    def get_identity(self) -> Mapping[str, str]:
-        token = self.access_token()
-        if token is None:
-            raise OAuthError("authentication is not configured")
+    def _identity_for_token(self, token: str) -> Mapping[str, str]:
         try:
             response = self._http.get(
-                f"{self.api_origin}/open-apis/authen/v1/user_info",
+                USER_INFO_ENDPOINT,
                 headers={"Authorization": f"Bearer {token}"},
             )
         except httpx.TransportError:
@@ -225,15 +275,19 @@ class OAuthClient:
             envelope = _mapping(response.json(), message="identity response was invalid")
         except ValueError:
             raise OAuthError("identity response was invalid") from None
-        if envelope.get("code", 0) != 0:
+        if type(envelope.get("code")) is not int or envelope.get("code") != 0:
             raise OAuthError("identity endpoint rejected the request")
         identity = _mapping(envelope.get("data"), message="identity response was invalid")
         return {key: value for key, value in identity.items() if isinstance(value, str)}
 
-    def status(self) -> AuthStatus:
-        if self.access_token() is None:
-            return AuthStatus(authenticated=False)
-        identity = self.get_identity()
+    def get_identity(self) -> Mapping[str, str]:
+        token = self.access_token()
+        if token is None:
+            raise OAuthError("authentication is not configured")
+        return self._identity_for_token(token)
+
+    def _verified_context(self, token: str) -> AuthContext:
+        identity = self._identity_for_token(token)
         if identity.get("union_id") != self.store.account_id:
             raise OAuthError("verified account identity did not match token store owner")
         tenant_id = identity.get("tenant_id") or identity.get("tenant_key")
@@ -241,14 +295,19 @@ class OAuthClient:
         open_id = identity.get("open_id")
         if not tenant_id or not union_id or not open_id:
             raise OAuthError("verified identity was missing canonical fields") from None
-        context = build_auth_context(
+        return build_auth_context(
             api_origin=self.api_origin,
             app_id=self.app_id,
             tenant_id=tenant_id,
             account_id=union_id,
             actor_id=open_id,
         )
-        return AuthStatus(authenticated=True, auth_context=context)
+
+    def status(self) -> AuthStatus:
+        token = self.access_token()
+        if token is None:
+            return AuthStatus(authenticated=False)
+        return AuthStatus(authenticated=True, auth_context=self._verified_context(token))
 
     def logout(self) -> None:
         self.store.clear()

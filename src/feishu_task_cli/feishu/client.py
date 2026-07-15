@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import math
 import re
 import time
 from collections.abc import Callable, Mapping
@@ -14,6 +15,7 @@ from feishu_task_cli.errors import FeishuTaskError
 LOGGER = logging.getLogger(__name__)
 REDACTED = "[REDACTED]"
 RETRYABLE_GET_STATUSES = frozenset({429, 502, 503, 504})
+MAX_RETRY_DELAY_SECONDS = 60.0
 SECRET_KEYS = frozenset(
     {
         "access_token",
@@ -137,8 +139,16 @@ class FeishuClient:
             raise ValueError("access token must be non-empty")
         if max_get_attempts < 1 or max_get_attempts > 5:
             raise ValueError("max_get_attempts must be between 1 and 5")
-        if backoff_base < 0 or backoff_cap < 0 or retry_after_cap < 0:
-            raise ValueError("retry delays must be non-negative")
+        retry_delays = (backoff_base, backoff_cap, retry_after_cap)
+        if any(
+            isinstance(value, bool)
+            or not isinstance(value, (int, float))
+            or not math.isfinite(value)
+            or value < 0
+            or value > MAX_RETRY_DELAY_SECONDS
+            for value in retry_delays
+        ):
+            raise ValueError("retry delays must be finite and between 0 and 60 seconds")
         self.api_origin = validate_api_origin(api_origin)
         self._access_token = access_token
         self._http = http_client or httpx.Client(timeout=10)
@@ -167,7 +177,7 @@ class FeishuClient:
             if (
                 isinstance(candidate, str)
                 and SAFE_REQUEST_ID.fullmatch(candidate)
-                and candidate not in forbidden
+                and all(not secret or secret not in candidate for secret in forbidden)
             ):
                 return candidate
         return None
@@ -249,7 +259,6 @@ class FeishuClient:
         forbidden = {self._access_token}
         forbidden.update(_string_values(json))
         forbidden.update(_string_values(params))
-        forbidden.update(_string_values(payload))
         request_id = self._request_id(response, forbidden=forbidden)
         self._emit(
             {

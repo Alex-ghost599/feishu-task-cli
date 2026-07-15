@@ -135,3 +135,90 @@ def test_config_read_error_does_not_retain_sensitive_cause(tmp_path: Path) -> No
 
     assert caught.value.__cause__ is None
     assert path.name not in repr(caught.value)
+
+
+def test_fstat_failure_is_typed_and_safe(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    path = tmp_path / "auth.yaml"
+    path.write_text("{}")
+    path.chmod(0o600)
+    secret = _secret("fstat-error")
+
+    def fail_fstat(descriptor: int) -> os.stat_result:
+        raise OSError(secret)
+
+    monkeypatch.setattr(os, "fstat", fail_fstat)
+    with pytest.raises(ConfigError) as caught:
+        Settings.load(config_path=path, environ={})
+    assert caught.value.__cause__ is None
+    assert secret not in repr(caught.value)
+
+
+def test_fdopen_failure_is_typed_and_safe(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    path = tmp_path / "auth.yaml"
+    path.write_text("{}")
+    path.chmod(0o600)
+    secret = _secret("fdopen-error")
+
+    def fail_fdopen(descriptor: int, *, encoding: str) -> object:
+        raise OSError(secret)
+
+    monkeypatch.setattr(os, "fdopen", fail_fdopen)
+    with pytest.raises(ConfigError) as caught:
+        Settings.load(config_path=path, environ={})
+    assert caught.value.__cause__ is None
+    assert secret not in repr(caught.value)
+
+
+def test_handle_close_failure_is_typed_and_safe(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "auth.yaml"
+    path.write_text("{}")
+    path.chmod(0o600)
+    secret = _secret("handle-close-error")
+    original_close = os.close
+
+    class CloseFailHandle:
+        def __init__(self, descriptor: int) -> None:
+            self.descriptor = descriptor
+
+        def __enter__(self) -> CloseFailHandle:
+            return self
+
+        def read(self, size: int = -1) -> str:
+            return "{}"
+
+        def __exit__(self, *args: object) -> None:
+            original_close(self.descriptor)
+            raise OSError(secret)
+
+    def close_fail_fdopen(descriptor: int, *, encoding: str) -> CloseFailHandle:
+        return CloseFailHandle(descriptor)
+
+    monkeypatch.setattr(os, "fdopen", close_fail_fdopen)
+    with pytest.raises(ConfigError) as caught:
+        Settings.load(config_path=path, environ={})
+    assert caught.value.__cause__ is None
+    assert secret not in repr(caught.value)
+
+
+def test_final_close_error_does_not_override_primary_safe_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    primary_secret = _secret("primary-error")
+    close_secret = _secret("close-error")
+    monkeypatch.setattr(os, "open", lambda *args: 999)
+
+    def fail_fstat(descriptor: int) -> os.stat_result:
+        raise OSError(primary_secret)
+
+    def fail_close(descriptor: int) -> None:
+        raise OSError(close_secret)
+
+    monkeypatch.setattr(os, "fstat", fail_fstat)
+    monkeypatch.setattr(os, "close", fail_close)
+    with pytest.raises(ConfigError) as caught:
+        Settings.load(config_path="synthetic", environ={})
+    assert caught.value.__cause__ is None
+    assert primary_secret not in repr(caught.value)
+    assert close_secret not in repr(caught.value)

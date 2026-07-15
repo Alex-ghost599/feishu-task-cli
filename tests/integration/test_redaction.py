@@ -159,6 +159,38 @@ def test_request_id_cannot_echo_secret_from_request_body() -> None:
     assert secret not in repr(caught.value)
 
 
+@pytest.mark.parametrize("candidate_template", ["req-{}", "{}-suffix"])
+@pytest.mark.parametrize("source", ["access", "json", "params"])
+def test_request_id_rejects_known_secret_as_substring(
+    candidate_template: str,
+    source: str,
+) -> None:
+    secret = _secret("request-id-substring")
+    events: list[object] = []
+
+    def transport(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            400,
+            headers={"x-request-id": candidate_template.format(secret)},
+            json={"code": 1234},
+        )
+
+    access_token = secret if source == "access" else _secret("access")
+    client = FeishuClient(
+        api_origin="https://open.feishu.cn",
+        access_token=access_token,
+        http_client=httpx.Client(transport=httpx.MockTransport(transport)),
+        max_get_attempts=1,
+        debug_hook=events.append,
+    )
+    kwargs = {} if source == "access" else {source: {"opaque": secret}}
+    with pytest.raises(FeishuAPIError) as caught:
+        client.request("GET", "/synthetic", **kwargs)  # type: ignore[arg-type]
+    assert caught.value.request_id is None
+    assert secret not in repr(caught.value)
+    assert secret not in repr(events)
+
+
 @pytest.mark.parametrize(
     "origin",
     ["http://open.feishu.cn", "https://evil.example", "https://open.feishu.cn/path"],
@@ -166,6 +198,29 @@ def test_request_id_cannot_echo_secret_from_request_body() -> None:
 def test_feishu_client_rejects_nonofficial_origin(origin: str) -> None:
     with pytest.raises(ValueError, match="official Feishu API origin"):
         FeishuClient(api_origin=origin, access_token=_secret("access"))
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("backoff_base", float("nan")),
+        ("backoff_base", float("inf")),
+        ("backoff_base", 61.0),
+        ("backoff_cap", float("nan")),
+        ("backoff_cap", float("inf")),
+        ("backoff_cap", 61.0),
+        ("retry_after_cap", float("nan")),
+        ("retry_after_cap", float("inf")),
+        ("retry_after_cap", 61.0),
+    ],
+)
+def test_retry_delay_configuration_is_finite_and_bounded(field: str, value: float) -> None:
+    with pytest.raises(ValueError, match="retry delays"):
+        FeishuClient(
+            api_origin="https://open.feishu.cn",
+            access_token=_secret("access"),
+            **{field: value},  # type: ignore[arg-type]
+        )
 
 
 def test_safe_request_id_is_retained() -> None:
@@ -182,6 +237,28 @@ def test_safe_request_id_is_retained() -> None:
     with pytest.raises(FeishuAPIError) as caught:
         client.request("GET", "/synthetic")
     assert caught.value.request_id == "req-synthetic-001"
+
+
+def test_ordinary_response_text_does_not_make_header_request_id_secret() -> None:
+    request_id = "req-synthetic-response-001"
+
+    def transport(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            400,
+            headers={"x-request-id": request_id},
+            json={"code": 1234, "message": request_id},
+        )
+
+    client = FeishuClient(
+        api_origin="https://open.feishu.cn",
+        access_token=_secret("access"),
+        http_client=httpx.Client(transport=httpx.MockTransport(transport)),
+        max_get_attempts=1,
+    )
+
+    with pytest.raises(FeishuAPIError) as caught:
+        client.request("GET", "/synthetic")
+    assert caught.value.request_id == request_id
 
 
 def test_get_retries_bounded_transport_failure() -> None:

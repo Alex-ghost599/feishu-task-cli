@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import stat
+import sys
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -28,22 +29,39 @@ def _read_private_config(path: Path) -> dict[str, object]:
     except OSError:
         raise UnsafeConfigError("secret config must be a current-user regular file") from None
     try:
-        metadata = os.fstat(descriptor)
+        try:
+            metadata = os.fstat(descriptor)
+        except OSError:
+            raise UnsafeConfigError("secret config safety could not be verified") from None
         if not stat.S_ISREG(metadata.st_mode):
             raise UnsafeConfigError("secret config must be a regular file")
         if metadata.st_uid != os.getuid():
             raise UnsafeConfigError("secret config must be owned by the current user")
         if stat.S_IMODE(metadata.st_mode) != 0o600:
             raise UnsafeConfigError("secret config must have exact mode 0600")
-        with os.fdopen(descriptor, encoding="utf-8") as handle:
-            descriptor = -1
-            try:
-                loaded = yaml.safe_load(handle) or {}
-            except (OSError, UnicodeError, yaml.YAMLError):
-                raise ConfigError("secret config could not be read or parsed") from None
+        try:
+            handle = os.fdopen(descriptor, encoding="utf-8")
+        except OSError:
+            raise ConfigError("secret config could not be read or parsed") from None
+        descriptor = -1
+        try:
+            with handle:
+                try:
+                    loaded = yaml.safe_load(handle) or {}
+                except (OSError, UnicodeError, yaml.YAMLError):
+                    raise ConfigError("secret config could not be read or parsed") from None
+        except ConfigError:
+            raise
+        except OSError:
+            raise ConfigError("secret config could not be read or parsed") from None
     finally:
         if descriptor >= 0:
-            os.close(descriptor)
+            active_error = sys.exc_info()[0] is not None
+            try:
+                os.close(descriptor)
+            except OSError:
+                if not active_error:
+                    raise ConfigError("secret config could not be closed safely") from None
     if not isinstance(loaded, dict) or not all(isinstance(key, str) for key in loaded):
         raise ConfigError("secret config must contain a string-keyed mapping")
     return loaded
