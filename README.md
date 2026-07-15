@@ -5,8 +5,9 @@ results. JSON artifacts are the stable Agent contract; the Markdown renderer tur
 into a concise handoff for a user.
 
 > **Safety boundary:** A Plan is not an executed Task. Only a Receipt records an execution
-> outcome, and only `verified` means required fields matched API readback. This v0.1.0 release
-> was validated with synthetic mocked responses and has **no live-tenant validation** claim.
+> outcome, and only `verified` means required fields matched API readback. This v0.1.1 release
+> candidate was validated with synthetic mocked responses and has **no live-tenant validation**
+> claim.
 
 ## Agent workflow
 
@@ -15,7 +16,7 @@ then configure one explicit Feishu app/account context:
 
 ```bash
 uv tool install \
-  "feishu-task-cli @ git+https://github.com/Alex-ghost599/feishu-task-cli@v0.1.0"
+  "feishu-task-cli @ git+https://github.com/Alex-ghost599/feishu-task-cli@v0.1.1"
 ```
 
 Before login, configure the Feishu application in the developer console:

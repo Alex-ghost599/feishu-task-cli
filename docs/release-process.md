@@ -23,7 +23,7 @@ Remote task branches are retained.
    uv pip install --python "$SMOKE_ROOT/venv/bin/python" dist/*.whl
    "$SMOKE_ROOT/venv/bin/feishu-task" --help
    test "$("$SMOKE_ROOT/venv/bin/python" -c \
-     'import feishu_task_cli; print(feishu_task_cli.__version__)')" = "0.1.0"
+     'import feishu_task_cli; print(feishu_task_cli.__version__)')" = "0.1.1"
    gitleaks git --redact --no-banner
    uv run python scripts/privacy_scan.py --history
    git diff --check
@@ -51,16 +51,22 @@ annotated tag on that exact commit:
 git fetch origin main develop --tags
 git switch main
 git pull --ff-only origin main
-git tag -a v0.1.0 -m "feishu-task-cli v0.1.0"
-test "$(git rev-list -n 1 v0.1.0)" = "$(git rev-parse origin/main)"
-git push origin v0.1.0
+git tag -a v0.1.1 -m "feishu-task-cli v0.1.1"
+test "$(git rev-list -n 1 v0.1.1)" = "$(git rev-parse origin/main)"
+git push origin v0.1.1
 ```
 
 The tag-only workflow independently rejects a lightweight tag, a tag not pointing at current
-`origin/main`, or a tag/version mismatch. It reruns the full gate, builds wheel and sdist, runs
+`origin/main`, an event SHA that is not the checked-out commit, or a tag/version mismatch. The
+event SHA, checked-out `HEAD`, peeled annotated tag commit, and fetched `origin/main` commit must
+all match exactly. It reruns the full gate, builds wheel and sdist, runs
 `twine check`, smoke-tests the wheel, records `SHA256SUMS`, uploads one immutable workflow
 artifact, creates build provenance attestations for those bytes, and creates a GitHub Release from
 the same bytes.
+
+Published tags are immutable, including tags whose workflow fails before a Release is created.
+Never move, delete, or reuse a failed release tag; fix the release path and use the next patch
+version.
 
 PyPI publishing is skipped by default. It runs only when the repository variable
 `PYPI_TRUSTED_PUBLISHING` is explicitly `true` and the protected `pypi` environment is configured
