@@ -29,8 +29,33 @@ def _fsync_directory(path: Path) -> None:
         os.close(descriptor)
 
 
+def _reject_symlink_ancestors(path: Path) -> None:
+    absolute = path.absolute()
+    current = Path(absolute.anchor)
+    for component in absolute.parts[1:]:
+        current /= component
+        if current.is_symlink():
+            raise JournalPermissionError("journal path must not contain symlink components")
+
+
+def _validate_private_directory(path: Path) -> None:
+    try:
+        details = path.lstat()
+    except OSError as error:
+        raise JournalPermissionError(
+            "journal lock directory cannot be created or inspected"
+        ) from error
+    if stat.S_ISLNK(details.st_mode) or not stat.S_ISDIR(details.st_mode):
+        raise JournalPermissionError("journal lock path must be a private directory")
+    if hasattr(os, "getuid") and details.st_uid != os.getuid():
+        raise JournalPermissionError("journal lock directory must be owned by the current user")
+    if stat.S_IMODE(details.st_mode) & 0o077:
+        raise JournalPermissionError("journal lock directory permissions must be 0700 or stricter")
+
+
 def prepare_private_directory(path: Path) -> None:
     """Create a private directory and durably persist each new directory entry."""
+    _reject_symlink_ancestors(path)
     missing: list[Path] = []
     cursor = path
     while not cursor.exists() and not cursor.is_symlink():
@@ -45,20 +70,13 @@ def prepare_private_directory(path: Path) -> None:
             pass
         except OSError as error:
             raise JournalPermissionError("journal directory cannot be created") from error
+        _validate_private_directory(directory)
         _fsync_directory(directory)
         _fsync_directory(directory.parent)
-    try:
-        details = path.lstat()
-    except OSError as error:
-        raise JournalPermissionError(
-            "journal lock directory cannot be created or inspected"
-        ) from error
-    if stat.S_ISLNK(details.st_mode) or not stat.S_ISDIR(details.st_mode):
-        raise JournalPermissionError("journal lock path must be a private directory")
-    if hasattr(os, "getuid") and details.st_uid != os.getuid():
-        raise JournalPermissionError("journal lock directory must be owned by the current user")
-    if stat.S_IMODE(details.st_mode) & 0o077:
-        raise JournalPermissionError("journal lock directory permissions must be 0700 or stricter")
+    _reject_symlink_ancestors(path)
+    _validate_private_directory(path)
+    _fsync_directory(path)
+    _fsync_directory(path.parent)
 
 
 @contextmanager

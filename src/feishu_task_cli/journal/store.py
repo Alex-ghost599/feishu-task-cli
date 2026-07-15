@@ -22,6 +22,7 @@ from feishu_task_cli.errors import (
     UnknownExecutionError,
 )
 from feishu_task_cli.journal.locking import (
+    _fsync_directory,
     default_journal_root,
     plan_execution_lock,
     prepare_private_directory,
@@ -140,15 +141,25 @@ class ExecutionJournal:
         path = self._record_path(plan_hash)
         if not path.exists() and not path.is_symlink():
             return None
-        details = path.lstat()
-        if stat.S_ISLNK(details.st_mode) or not stat.S_ISREG(details.st_mode):
-            raise JournalPermissionError("journal record must be a private regular file")
-        if hasattr(os, "getuid") and details.st_uid != os.getuid():
-            raise JournalPermissionError("journal record must be owned by the current user")
-        if stat.S_IMODE(details.st_mode) & 0o077:
-            raise JournalPermissionError("journal record permissions must be 0600 or stricter")
         try:
-            payload: Any = json.loads(path.read_text(encoding="utf-8"))
+            descriptor = os.open(
+                path,
+                os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0),
+            )
+        except OSError as error:
+            raise JournalPermissionError("journal record cannot be safely opened") from error
+        try:
+            details = os.fstat(descriptor)
+            if not stat.S_ISREG(details.st_mode):
+                raise JournalPermissionError("journal record must be a private regular file")
+            if hasattr(os, "getuid") and details.st_uid != os.getuid():
+                raise JournalPermissionError("journal record must be owned by the current user")
+            if stat.S_IMODE(details.st_mode) & 0o077:
+                raise JournalPermissionError("journal record permissions must be 0600 or stricter")
+            content = os.read(descriptor, 16_385)
+            if len(content) > 16_384:
+                raise JournalCorruptError("execution journal record is corrupt")
+            payload: Any = json.loads(content.decode("utf-8"))
             if not isinstance(payload, dict) or set(payload) != RECORD_KEYS:
                 raise ValueError("record fields do not match the journal contract")
             if payload["plan_hash"] != plan_hash:
@@ -179,6 +190,8 @@ class ExecutionJournal:
             ValueError,
         ) as error:
             raise JournalCorruptError("execution journal record is corrupt") from error
+        finally:
+            os.close(descriptor)
 
     def _write(self, record: JournalRecord) -> None:
         path = self._record_path(record.plan_hash)
@@ -193,11 +206,7 @@ class ExecutionJournal:
                 handle.flush()
                 os.fsync(handle.fileno())
             os.replace(temporary, path)
-            directory = os.open(self.records_path, os.O_RDONLY)
-            try:
-                os.fsync(directory)
-            finally:
-                os.close(directory)
+            _fsync_directory(self.records_path)
         except BaseException:
             with suppress(FileNotFoundError):
                 os.unlink(temporary)
