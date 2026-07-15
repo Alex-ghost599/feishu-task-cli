@@ -259,6 +259,8 @@ def test_refresh_does_not_retry_read_timeout() -> None:
     assert attempts == 1
     assert secret not in str(caught.value)
     assert secret not in repr(caught.value)
+    assert caught.value.__cause__ is None
+    assert caught.value.__context__ is None
 
 
 def test_status_returns_only_safe_fingerprints_and_logout_clears_tokens() -> None:
@@ -421,13 +423,73 @@ def test_refresh_second_token_write_failure_is_fail_closed_after_restart() -> No
         store=store,
         http_client=httpx.Client(transport=httpx.MockTransport(transport)),
     )
-    with pytest.raises(Exception) as caught:
+    with pytest.raises(OAuthError) as caught:
         client.refresh()
     assert "synthetic-new-access" not in repr(caught.value)
+    assert caught.value.__cause__ is None
+    assert caught.value.__context__ is None
 
     restarted = TokenStore(app_id="cli_synthetic", account_id="account_synthetic", backend=backend)
     assert restarted.get_access_token() is None
     assert restarted.get_refresh_token() == "synthetic-new-refresh"
+
+
+def test_oauth_json_errors_have_no_exception_chain() -> None:
+    secret = "synthetic-invalid-json-secret"
+
+    def transport(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=f"{{{secret}")
+
+    client = OAuthClient(
+        settings=_settings(),
+        store=_store(),
+        http_client=httpx.Client(transport=httpx.MockTransport(transport)),
+    )
+    with pytest.raises(OAuthError) as caught:
+        client.exchange_code(code="synthetic-code", redirect_uri="http://127.0.0.1/callback")
+    assert caught.value.__cause__ is None
+    assert caught.value.__context__ is None
+    assert secret not in repr(caught.value)
+
+
+def test_exchange_transport_error_has_no_request_context() -> None:
+    secret = "synthetic-exchange-transport-secret"
+
+    def transport(request: httpx.Request) -> httpx.Response:
+        raise httpx.ReadTimeout(secret, request=request)
+
+    client = OAuthClient(
+        settings=_settings(),
+        store=_store(),
+        http_client=httpx.Client(transport=httpx.MockTransport(transport)),
+    )
+    with pytest.raises(OAuthError) as caught:
+        client.exchange_code(code="synthetic-code", redirect_uri="http://127.0.0.1/callback")
+    assert caught.value.__cause__ is None
+    assert caught.value.__context__ is None
+    assert secret not in repr(caught.value)
+
+
+def test_identity_json_and_transport_errors_have_no_exception_chain() -> None:
+    secret = "synthetic-identity-error-secret"
+
+    for failure in ("json", "transport"):
+
+        def transport(request: httpx.Request, *, mode: str = failure) -> httpx.Response:
+            if mode == "transport":
+                raise httpx.ReadTimeout(secret, request=request)
+            return httpx.Response(200, content=f"{{{secret}")
+
+        client = OAuthClient(
+            settings=_settings(headless_token="synthetic-headless"),
+            store=_store(),
+            http_client=httpx.Client(transport=httpx.MockTransport(transport)),
+        )
+        with pytest.raises(OAuthError) as caught:
+            client.get_identity()
+        assert caught.value.__cause__ is None
+        assert caught.value.__context__ is None
+        assert secret not in repr(caught.value)
 
 
 def test_callback_ignores_wrong_path_and_state_until_matching_callback() -> None:

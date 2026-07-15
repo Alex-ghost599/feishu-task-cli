@@ -45,23 +45,34 @@ class TokenStore:
     def _set(self, kind: str, token: str) -> None:
         if not token:
             raise ValueError("token must be non-empty")
+        failed = False
         try:
             self.backend.set_password(SERVICE_NAME, self._username(kind), token)
         except Exception:
-            raise TokenStoreError("keyring could not store authentication material") from None
+            failed = True
+        if failed:
+            raise TokenStoreError("keyring could not store authentication material")
 
     def _get(self, kind: str) -> str | None:
+        failed = False
+        result: str | None = None
         try:
-            return self.backend.get_password(SERVICE_NAME, self._username(kind))
+            result = self.backend.get_password(SERVICE_NAME, self._username(kind))
         except Exception:
-            raise TokenStoreError("keyring could not read authentication material") from None
+            failed = True
+        if failed:
+            raise TokenStoreError("keyring could not read authentication material")
+        return result
 
     def _delete(self, kind: str) -> None:
+        failed = False
         try:
             with suppress(PasswordDeleteError):
                 self.backend.delete_password(SERVICE_NAME, self._username(kind))
         except Exception:
-            raise TokenStoreError("keyring could not clear authentication material") from None
+            failed = True
+        if failed:
+            raise TokenStoreError("keyring could not clear authentication material")
 
     def set_access_token(self, token: str) -> None:
         self._set("access", token)

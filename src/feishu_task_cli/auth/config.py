@@ -2,10 +2,11 @@ from __future__ import annotations
 
 import os
 import stat
-import sys
 from collections.abc import Mapping
+from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TextIO
 from urllib.parse import urlsplit
 
 import yaml
@@ -22,46 +23,72 @@ class UnsafeConfigError(ConfigError):
     """Raised before reading a config file that is not private to this user."""
 
 
+def _try_open(path: Path, flags: int) -> int | None:
+    descriptor: int | None = None
+    with suppress(OSError):
+        descriptor = os.open(path, flags)
+    return descriptor
+
+
+def _try_fstat(descriptor: int) -> os.stat_result | None:
+    metadata: os.stat_result | None = None
+    with suppress(OSError):
+        metadata = os.fstat(descriptor)
+    return metadata
+
+
+def _try_fdopen(descriptor: int) -> TextIO | None:
+    handle: TextIO | None = None
+    with suppress(OSError):
+        handle = os.fdopen(descriptor, encoding="utf-8")
+    return handle
+
+
+def _try_load_and_close(handle: TextIO) -> tuple[object, bool]:
+    loaded: object = None
+    failed = False
+    try:
+        with handle:
+            loaded = yaml.safe_load(handle) or {}
+    except (OSError, UnicodeError, yaml.YAMLError):
+        failed = True
+    return loaded, failed
+
+
+def _try_close(descriptor: int) -> bool:
+    failed = False
+    try:
+        os.close(descriptor)
+    except OSError:
+        failed = True
+    return not failed
+
+
 def _read_private_config(path: Path) -> dict[str, object]:
     flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
-    try:
-        descriptor = os.open(path, flags)
-    except OSError:
-        raise UnsafeConfigError("secret config must be a current-user regular file") from None
-    try:
-        try:
-            metadata = os.fstat(descriptor)
-        except OSError:
-            raise UnsafeConfigError("secret config safety could not be verified") from None
-        if not stat.S_ISREG(metadata.st_mode):
-            raise UnsafeConfigError("secret config must be a regular file")
-        if metadata.st_uid != os.getuid():
-            raise UnsafeConfigError("secret config must be owned by the current user")
-        if stat.S_IMODE(metadata.st_mode) != 0o600:
-            raise UnsafeConfigError("secret config must have exact mode 0600")
-        try:
-            handle = os.fdopen(descriptor, encoding="utf-8")
-        except OSError:
-            raise ConfigError("secret config could not be read or parsed") from None
-        descriptor = -1
-        try:
-            with handle:
-                try:
-                    loaded = yaml.safe_load(handle) or {}
-                except (OSError, UnicodeError, yaml.YAMLError):
-                    raise ConfigError("secret config could not be read or parsed") from None
-        except ConfigError:
-            raise
-        except OSError:
-            raise ConfigError("secret config could not be read or parsed") from None
-    finally:
-        if descriptor >= 0:
-            active_error = sys.exc_info()[0] is not None
-            try:
-                os.close(descriptor)
-            except OSError:
-                if not active_error:
-                    raise ConfigError("secret config could not be closed safely") from None
+    descriptor = _try_open(path, flags)
+    if descriptor is None:
+        raise UnsafeConfigError("secret config must be a current-user regular file")
+    metadata = _try_fstat(descriptor)
+    if metadata is None:
+        _try_close(descriptor)
+        raise UnsafeConfigError("secret config safety could not be verified")
+    if not stat.S_ISREG(metadata.st_mode):
+        _try_close(descriptor)
+        raise UnsafeConfigError("secret config must be a regular file")
+    if metadata.st_uid != os.getuid():
+        _try_close(descriptor)
+        raise UnsafeConfigError("secret config must be owned by the current user")
+    if stat.S_IMODE(metadata.st_mode) != 0o600:
+        _try_close(descriptor)
+        raise UnsafeConfigError("secret config must have exact mode 0600")
+    handle = _try_fdopen(descriptor)
+    if handle is None:
+        _try_close(descriptor)
+        raise ConfigError("secret config could not be read or parsed")
+    loaded, load_failed = _try_load_and_close(handle)
+    if load_failed:
+        raise ConfigError("secret config could not be read or parsed")
     if not isinstance(loaded, dict) or not all(isinstance(key, str) for key in loaded):
         raise ConfigError("secret config must contain a string-keyed mapping")
     return loaded
@@ -79,12 +106,18 @@ def _origin(value: object) -> str:
     message = "FEISHU_API_ORIGIN must be the official Feishu API origin"
     if not isinstance(value, str):
         raise ConfigError(message)
+    parse_failed = False
+    parsed = None
+    hostname = None
+    port = None
     try:
         parsed = urlsplit(value)
         hostname = parsed.hostname
         port = parsed.port
     except ValueError:
-        raise ConfigError(message) from None
+        parse_failed = True
+    if parse_failed or parsed is None:
+        raise ConfigError(message)
     if (
         parsed.scheme != "https"
         or hostname != "open.feishu.cn"

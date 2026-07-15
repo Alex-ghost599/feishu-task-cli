@@ -7,6 +7,11 @@ import pytest
 from feishu_task_cli.auth.keyring_store import TokenStore, TokenStoreError
 
 
+def _assert_no_exception_chain(error: BaseException) -> None:
+    assert error.__cause__ is None
+    assert error.__context__ is None
+
+
 class MemoryKeyring:
     def __init__(self) -> None:
         self.values: dict[tuple[str, str], str] = {}
@@ -87,6 +92,7 @@ def test_keyring_backend_error_does_not_expose_token() -> None:
 
     assert secret not in str(caught.value)
     assert secret not in repr(caught.value)
+    _assert_no_exception_chain(caught.value)
 
 
 def test_keyring_read_and_delete_errors_do_not_expose_backend_content() -> None:
@@ -104,3 +110,5 @@ def test_keyring_read_and_delete_errors_do_not_expose_backend_content() -> None:
 
     assert backend.secret not in repr(read_error.value)
     assert backend.secret not in repr(delete_error.value)
+    _assert_no_exception_chain(read_error.value)
+    _assert_no_exception_chain(delete_error.value)

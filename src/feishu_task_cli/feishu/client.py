@@ -229,6 +229,7 @@ class FeishuClient:
                     "attempt": attempt + 1,
                 }
             )
+            transport_failed = False
             try:
                 response = self._http.request(
                     normalized,
@@ -238,12 +239,13 @@ class FeishuClient:
                     headers=request_headers,
                 )
             except httpx.TransportError:
+                transport_failed = True
+            if transport_failed:
                 if normalized == "GET" and attempt + 1 < attempts:
                     self._sleep(self._retry_delay(attempt))
                     continue
-                raise FeishuTransportError(
-                    method=normalized, retryable=normalized == "GET"
-                ) from None
+                raise FeishuTransportError(method=normalized, retryable=normalized == "GET")
+            assert response is not None
             if (
                 normalized == "GET"
                 and response.status_code in RETRYABLE_GET_STATUSES

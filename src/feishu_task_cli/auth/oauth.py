@@ -176,10 +176,15 @@ class OAuthClient:
     def _token_payload(self, response: httpx.Response) -> Mapping[str, object]:
         if response.status_code >= 400:
             raise OAuthError(f"OAuth token endpoint returned HTTP {response.status_code}")
+        invalid_json = False
+        raw_payload: object = None
         try:
-            envelope = _mapping(response.json(), message="OAuth token response was invalid")
+            raw_payload = response.json()
         except ValueError:
-            raise OAuthError("OAuth token response was invalid") from None
+            invalid_json = True
+        if invalid_json:
+            raise OAuthError("OAuth token response was invalid")
+        envelope = _mapping(raw_payload, message="OAuth token response was invalid")
         code = envelope.get("code")
         if type(code) is not int or code != 0:
             raise OAuthError("OAuth token endpoint rejected the request")
@@ -203,13 +208,16 @@ class OAuthClient:
         return access, refresh
 
     def _commit_tokens(self, *, access_token: str, refresh_token: str) -> None:
+        failed = False
         try:
             self.store.commit_tokens(
                 access_token=access_token,
                 refresh_token=refresh_token,
             )
         except Exception:
-            raise OAuthError("OAuth tokens could not be persisted safely") from None
+            failed = True
+        if failed:
+            raise OAuthError("OAuth tokens could not be persisted safely")
 
     def exchange_code(self, *, code: str, redirect_uri: str) -> None:
         if not code:
@@ -222,10 +230,15 @@ class OAuthClient:
             "redirect_uri": redirect_uri,
         }
         payload["client_" + "secret"] = oauth_credential
+        transport_failed = False
+        response: httpx.Response | None = None
         try:
             response = self._http.post(TOKEN_ENDPOINT, json=payload)
         except httpx.TransportError:
-            raise OAuthError("OAuth code exchange transport failed") from None
+            transport_failed = True
+        if transport_failed:
+            raise OAuthError("OAuth code exchange transport failed")
+        assert response is not None
         access, refresh = self._token_pair(
             self._token_payload(response),
             require_refresh=False,
@@ -245,16 +258,21 @@ class OAuthClient:
             "refresh_token": refresh_credential,
         }
         payload["client_" + "secret"] = oauth_credential
+        response: httpx.Response | None = None
         for attempt in range(2):
+            failure: str | None = None
             try:
                 response = self._http.post(TOKEN_ENDPOINT, json=payload)
-                break
             except httpx.ConnectError:
-                if attempt == 0:
-                    continue
-                raise OAuthError("OAuth refresh transport failed") from None
+                failure = "connect"
             except httpx.TransportError:
-                raise OAuthError("OAuth refresh transport failed") from None
+                failure = "transport"
+            if failure is None:
+                break
+            if failure == "connect" and attempt == 0:
+                continue
+            raise OAuthError("OAuth refresh transport failed")
+        assert response is not None
         access, refresh = self._token_pair(
             self._token_payload(response),
             require_refresh=True,
@@ -262,19 +280,29 @@ class OAuthClient:
         self._commit_tokens(access_token=access, refresh_token=refresh)
 
     def _identity_for_token(self, token: str) -> Mapping[str, str]:
+        transport_failed = False
+        response: httpx.Response | None = None
         try:
             response = self._http.get(
                 USER_INFO_ENDPOINT,
                 headers={"Authorization": f"Bearer {token}"},
             )
         except httpx.TransportError:
-            raise OAuthError("identity transport failed") from None
+            transport_failed = True
+        if transport_failed:
+            raise OAuthError("identity transport failed")
+        assert response is not None
         if response.status_code >= 400:
             raise OAuthError(f"identity endpoint returned HTTP {response.status_code}")
+        invalid_json = False
+        raw_payload: object = None
         try:
-            envelope = _mapping(response.json(), message="identity response was invalid")
+            raw_payload = response.json()
         except ValueError:
-            raise OAuthError("identity response was invalid") from None
+            invalid_json = True
+        if invalid_json:
+            raise OAuthError("identity response was invalid")
+        envelope = _mapping(raw_payload, message="identity response was invalid")
         if type(envelope.get("code")) is not int or envelope.get("code") != 0:
             raise OAuthError("identity endpoint rejected the request")
         identity = _mapping(envelope.get("data"), message="identity response was invalid")

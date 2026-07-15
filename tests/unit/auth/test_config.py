@@ -11,6 +11,11 @@ from feishu_task_cli.auth.config import ConfigError, Settings, UnsafeConfigError
 from feishu_task_cli.cli import app
 
 
+def _assert_no_exception_chain(error: BaseException) -> None:
+    assert error.__cause__ is None
+    assert error.__context__ is None
+
+
 def _secret(label: str) -> str:
     return f"synthetic-{label}-" + "x" * 24
 
@@ -68,6 +73,7 @@ def test_invalid_environment_value_does_not_appear_in_validation_error() -> None
 
     assert secret not in str(caught.value)
     assert secret not in repr(caught.value)
+    _assert_no_exception_chain(caught.value)
 
 
 def test_secret_config_must_be_a_regular_file(tmp_path: Path) -> None:
@@ -77,8 +83,9 @@ def test_secret_config_must_be_a_regular_file(tmp_path: Path) -> None:
     link = tmp_path / "auth.json"
     os.symlink(target, link)
 
-    with pytest.raises(UnsafeConfigError, match="regular file"):
+    with pytest.raises(UnsafeConfigError, match="regular file") as caught:
         Settings.load(config_path=link, environ={})
+    _assert_no_exception_chain(caught.value)
 
 
 def test_malformed_private_config_does_not_leak_its_content(tmp_path: Path) -> None:
@@ -92,6 +99,7 @@ def test_malformed_private_config_does_not_leak_its_content(tmp_path: Path) -> N
 
     assert secret not in str(caught.value)
     assert secret not in repr(caught.value)
+    _assert_no_exception_chain(caught.value)
 
 
 @pytest.mark.parametrize(
@@ -109,8 +117,9 @@ def test_malformed_private_config_does_not_leak_its_content(tmp_path: Path) -> N
     ],
 )
 def test_settings_constructor_rejects_noncanonical_feishu_origin(origin: str) -> None:
-    with pytest.raises(ConfigError, match="official Feishu API origin"):
+    with pytest.raises(ConfigError, match="official Feishu API origin") as caught:
         Settings(api_origin=origin, app_id="cli_synthetic")
+    _assert_no_exception_chain(caught.value)
 
 
 def test_config_decode_and_field_type_fail_with_typed_safe_error(tmp_path: Path) -> None:
@@ -125,6 +134,7 @@ def test_config_decode_and_field_type_fail_with_typed_safe_error(tmp_path: Path)
 
     assert "\\xff" not in repr(decode_error.value)
     assert "123" not in repr(type_error.value)
+    _assert_no_exception_chain(decode_error.value)
 
 
 def test_config_read_error_does_not_retain_sensitive_cause(tmp_path: Path) -> None:
@@ -133,7 +143,7 @@ def test_config_read_error_does_not_retain_sensitive_cause(tmp_path: Path) -> No
     with pytest.raises(ConfigError) as caught:
         Settings.load(config_path=path, environ={})
 
-    assert caught.value.__cause__ is None
+    _assert_no_exception_chain(caught.value)
     assert path.name not in repr(caught.value)
 
 
@@ -149,7 +159,7 @@ def test_fstat_failure_is_typed_and_safe(tmp_path: Path, monkeypatch: pytest.Mon
     monkeypatch.setattr(os, "fstat", fail_fstat)
     with pytest.raises(ConfigError) as caught:
         Settings.load(config_path=path, environ={})
-    assert caught.value.__cause__ is None
+    _assert_no_exception_chain(caught.value)
     assert secret not in repr(caught.value)
 
 
@@ -165,7 +175,7 @@ def test_fdopen_failure_is_typed_and_safe(tmp_path: Path, monkeypatch: pytest.Mo
     monkeypatch.setattr(os, "fdopen", fail_fdopen)
     with pytest.raises(ConfigError) as caught:
         Settings.load(config_path=path, environ={})
-    assert caught.value.__cause__ is None
+    _assert_no_exception_chain(caught.value)
     assert secret not in repr(caught.value)
 
 
@@ -198,7 +208,7 @@ def test_handle_close_failure_is_typed_and_safe(
     monkeypatch.setattr(os, "fdopen", close_fail_fdopen)
     with pytest.raises(ConfigError) as caught:
         Settings.load(config_path=path, environ={})
-    assert caught.value.__cause__ is None
+    _assert_no_exception_chain(caught.value)
     assert secret not in repr(caught.value)
 
 
@@ -219,6 +229,38 @@ def test_final_close_error_does_not_override_primary_safe_failure(
     monkeypatch.setattr(os, "close", fail_close)
     with pytest.raises(ConfigError) as caught:
         Settings.load(config_path="synthetic", environ={})
-    assert caught.value.__cause__ is None
+    _assert_no_exception_chain(caught.value)
     assert primary_secret not in repr(caught.value)
     assert close_secret not in repr(caught.value)
+
+
+def test_handle_read_failure_has_no_exception_chain(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "auth.yaml"
+    path.write_text("{}")
+    path.chmod(0o600)
+    secret = _secret("handle-read-error")
+    original_close = os.close
+
+    class ReadFailHandle:
+        def __init__(self, descriptor: int) -> None:
+            self.descriptor = descriptor
+
+        def __enter__(self) -> ReadFailHandle:
+            return self
+
+        def read(self, size: int = -1) -> str:
+            raise OSError(secret)
+
+        def __exit__(self, *args: object) -> None:
+            original_close(self.descriptor)
+
+    def read_fail_fdopen(descriptor: int, *, encoding: str) -> ReadFailHandle:
+        return ReadFailHandle(descriptor)
+
+    monkeypatch.setattr(os, "fdopen", read_fail_fdopen)
+    with pytest.raises(ConfigError) as caught:
+        Settings.load(config_path=path, environ={})
+    _assert_no_exception_chain(caught.value)
+    assert secret not in repr(caught.value)

@@ -353,3 +353,5 @@ def test_mutation_transport_is_attempted_once(
     assert attempts == 1
     assert secret not in str(caught.value)
     assert secret not in repr(caught.value)
+    assert caught.value.__cause__ is None
+    assert caught.value.__context__ is None
