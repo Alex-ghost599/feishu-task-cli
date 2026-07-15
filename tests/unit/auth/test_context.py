@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 from feishu_task_cli.auth.context import build_auth_context, resolve_auth_context
 
 ORIGIN = "https://open.feishu.cn"
@@ -62,8 +64,9 @@ class IdentityClient:
     def get_identity(self) -> dict[str, str]:
         return {
             "tenant_id": "tenant_synthetic",
-            "account_id": "account_synthetic",
-            "actor_id": "actor_synthetic",
+            "union_id": "account_synthetic",
+            "open_id": "actor_synthetic",
+            "user_id": "synthetic-optional-user-id",
         }
 
 
@@ -78,3 +81,31 @@ def test_resolve_auth_context_uses_verified_identity() -> None:
         actor_id="actor_synthetic",
     )
     assert context == expected
+
+
+def test_resolve_auth_context_requires_union_id_and_open_id() -> None:
+    class MissingCanonicalIdentity(IdentityClient):
+        def get_identity(self) -> dict[str, str]:
+            return {
+                "tenant_id": "tenant_synthetic",
+                "user_id": "synthetic-optional-user-id",
+            }
+
+    with pytest.raises(ValueError, match="union_id"):
+        resolve_auth_context(MissingCanonicalIdentity())
+
+
+def test_invalid_auth_context_origin_does_not_echo_input() -> None:
+    secret_origin = "https://synthetic-secret.example"
+
+    with pytest.raises(ValueError) as caught:
+        build_auth_context(
+            api_origin=secret_origin,
+            app_id="cli_synthetic",
+            tenant_id="tenant_synthetic",
+            account_id="account_synthetic",
+            actor_id="actor_synthetic",
+        )
+
+    assert secret_origin not in repr(caught.value)
+    assert secret_origin not in str(caught.value)

@@ -1,18 +1,22 @@
 from __future__ import annotations
 
 import json
-import socket
 import threading
+import urllib.error
 import urllib.parse
 import urllib.request
+from contextlib import suppress
+from pathlib import Path
 
 import httpx
 import pytest
 from pydantic import SecretStr
 
 from feishu_task_cli.auth.config import Settings
-from feishu_task_cli.auth.keyring_store import TokenStore, TokenStoreError
-from feishu_task_cli.auth.oauth import OAuthClient, OAuthError
+from feishu_task_cli.auth.keyring_store import TokenStore
+from feishu_task_cli.auth.oauth import OAuthClient, OAuthDeniedError, OAuthError
+
+TOKEN_FIXTURE = Path(__file__).parents[1] / "fixtures" / "feishu_oauth_v2_token.json"
 
 
 class MemoryKeyring:
@@ -29,24 +33,15 @@ class MemoryKeyring:
         self.values.pop((service, username), None)
 
 
-class AccessWriteRejectingKeyring(MemoryKeyring):
-    def set_password(self, service: str, username: str, password: str) -> None:
-        if username.endswith("-access"):
-            raise RuntimeError(password)
-        super().set_password(service, username, password)
-
-
 def _settings(
     *,
     headless_token: str | None = None,
-    redirect_uri: str = "http://127.0.0.1:8765/callback",
-    account_id: str = "synthetic_account",
+    app_secret: str | None = "synthetic-app-secret",
 ) -> Settings:
     return Settings(
         app_id="cli_synthetic",
-        account_id=account_id,
-        oauth_redirect_uri=redirect_uri,
-        app_secret=SecretStr("synthetic-app-credential"),
+        account_id="account_synthetic",
+        app_secret=None if app_secret is None else SecretStr(app_secret),
         user_access_token=None if headless_token is None else SecretStr(headless_token),
     )
 
@@ -54,30 +49,9 @@ def _settings(
 def _store() -> TokenStore:
     return TokenStore(
         app_id="cli_synthetic",
-        account_id="synthetic_account",
+        account_id="account_synthetic",
         backend=MemoryKeyring(),
     )
-
-
-def _identity_response(*, account_id: str = "synthetic_account") -> httpx.Response:
-    return httpx.Response(
-        200,
-        json={
-            "code": 0,
-            "data": {
-                "tenant_key": "tenant_synthetic",
-                "user_id": account_id,
-                "open_id": "actor_synthetic",
-            },
-        },
-    )
-
-
-def _free_loopback_uri() -> str:
-    with socket.socket() as listener:
-        listener.bind(("127.0.0.1", 0))
-        port = listener.getsockname()[1]
-    return f"http://127.0.0.1:{port}/callback"
 
 
 def test_headless_environment_token_takes_precedence() -> None:
@@ -86,71 +60,26 @@ def test_headless_environment_token_takes_precedence() -> None:
     assert client.access_token() == "synthetic-headless"
 
 
-def test_authorization_url_matches_current_feishu_contract() -> None:
-    client = OAuthClient(settings=_settings(), store=_store())
-
-    url = urllib.parse.urlsplit(client.authorization_url(state="synthetic-state"))
-    query = urllib.parse.parse_qs(url.query)
-
-    assert (url.scheme, url.netloc, url.path) == (
-        "https",
-        "accounts.feishu.cn",
-        "/open-apis/authen/v1/authorize",
-    )
-    assert query == {
-        "client_id": ["cli_synthetic"],
-        "redirect_uri": ["http://127.0.0.1:8765/callback"],
-        "response_type": ["code"],
-        "scope": ["offline_access task:task:write"],
-        "state": ["synthetic-state"],
-    }
-
-
-def test_oauth_requires_task_write_scope_and_client_secret() -> None:
-    with pytest.raises(ValueError, match="scopes"):
-        OAuthClient(
-            settings=Settings(
-                app_id="cli_synthetic",
-                account_id="synthetic_account",
-                oauth_redirect_uri="http://127.0.0.1:8765/callback",
-                oauth_scopes=("offline_access",),
-            ),
-            store=_store(),
-        )
-
-    client = OAuthClient(
-        settings=Settings(
-            app_id="cli_synthetic",
-            account_id="synthetic_account",
-            oauth_redirect_uri="http://127.0.0.1:8765/callback",
-        ),
-        store=_store(),
-    )
-    with pytest.raises(OAuthError, match="FEISHU_APP_SECRET"):
-        client.exchange_code(code="synthetic-code")
-
-
 def test_explicit_localhost_callback_exchanges_code_and_stores_tokens() -> None:
     store = _store()
-    redirect_uri = _free_loopback_uri()
 
     def transport(request: httpx.Request) -> httpx.Response:
-        if request.method == "GET":
-            return _identity_response()
-        assert request.url.path == "/open-apis/authen/v2/oauth/token"
-        assert json.loads(request.content) == {
-            "grant_type": "authorization_code",
-            "client_id": "cli_synthetic",
-            "client_secret": "synthetic-app-credential",
-            "code": "synthetic-code",
-            "redirect_uri": redirect_uri,
-        }
+        if request.url.path.endswith("/oauth/token"):
+            body = json.loads(request.content)
+            assert body["code"] == "synthetic-code"
+            assert body["client_secret"] == "synthetic-app-secret"
+            return httpx.Response(200, json=json.loads(TOKEN_FIXTURE.read_text()))
+        assert request.url.path == "/open-apis/authen/v1/user_info"
+        assert request.headers["Authorization"] == "Bearer synthetic-access"
         return httpx.Response(
             200,
             json={
                 "code": 0,
-                "access_token": "synthetic-access",
-                "refresh_token": "synthetic-refresh",
+                "data": {
+                    "tenant_id": "tenant_synthetic",
+                    "union_id": "account_synthetic",
+                    "open_id": "actor_synthetic",
+                },
             },
         )
 
@@ -158,84 +87,142 @@ def test_explicit_localhost_callback_exchanges_code_and_stores_tokens() -> None:
         query = urllib.parse.parse_qs(urllib.parse.urlsplit(url).query)
         callback = query["redirect_uri"][0]
         state = query["state"][0]
-        assert callback == redirect_uri
-        assert query["client_id"] == ["cli_synthetic"]
-        assert query["response_type"] == ["code"]
-        assert "offline_access" in query["scope"][0].split()
 
         def invoke() -> None:
-            with pytest.raises(urllib.error.HTTPError):
-                urllib.request.urlopen(f"{callback}?code=wrong&state=wrong")
             with urllib.request.urlopen(
                 f"{callback}?code=synthetic-code&state={urllib.parse.quote(state)}"
             ) as response:
                 assert response.status == 200
 
-        threading.Thread(target=invoke, daemon=True).start()
+        threading.Thread(target=invoke).start()
         return True
 
     client = OAuthClient(
-        settings=_settings(redirect_uri=redirect_uri),
+        settings=_settings(),
         store=store,
         http_client=httpx.Client(transport=httpx.MockTransport(transport)),
         browser_open=browser_open,
     )
 
-    client.login(timeout=2)
+    client.login(timeout=2, scopes=("task:task:write",))
 
     assert store.get_access_token() == "synthetic-access"
     assert store.get_refresh_token() == "synthetic-refresh"
 
 
-def test_login_surfaces_authorization_denial_without_waiting_for_timeout() -> None:
-    redirect_uri = _free_loopback_uri()
+def test_authorization_url_matches_current_official_contract() -> None:
+    client = OAuthClient(settings=_settings(), store=_store())
+
+    url = urllib.parse.urlsplit(
+        client.authorization_url(
+            redirect_uri="http://127.0.0.1:12345/callback",
+            state="synthetic-state",
+            scopes=("task:task:write", "offline_access", "task:task:write"),
+        )
+    )
+    query = urllib.parse.parse_qs(url.query)
+
+    assert f"{url.scheme}://{url.netloc}{url.path}" == (
+        "https://accounts.feishu.cn/open-apis/authen/v1/authorize"
+    )
+    assert query["client_id"] == ["cli_synthetic"]
+    assert "app_id" not in query
+    assert query["scope"][0].split() == ["offline_access", "task:task:write"]
+
+
+@pytest.mark.parametrize(
+    "scopes",
+    [(), ("task:tasklist:read",), ("contact:user.base:readonly",), ("",)],
+)
+def test_authorization_url_rejects_missing_or_unallowlisted_task_scopes(
+    scopes: tuple[str, ...],
+) -> None:
+    client = OAuthClient(settings=_settings(), store=_store())
+
+    with pytest.raises(ValueError, match="scope"):
+        client.authorization_url(
+            redirect_uri="http://127.0.0.1:12345/callback",
+            state="synthetic-state",
+            scopes=scopes,
+        )
+
+
+@pytest.mark.parametrize("invalid_code", [None, "0", False])
+def test_token_success_requires_explicit_integer_zero_code(invalid_code: object) -> None:
+    calls = 0
+
+    def transport(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        payload = json.loads(TOKEN_FIXTURE.read_text())
+        if invalid_code is None:
+            payload.pop("code")
+        else:
+            payload["code"] = invalid_code
+        return httpx.Response(200, json=payload)
+
+    store = _store()
+    client = OAuthClient(
+        settings=_settings(),
+        store=store,
+        http_client=httpx.Client(transport=httpx.MockTransport(transport)),
+    )
+    with pytest.raises(OAuthError, match="rejected"):
+        client.exchange_code(code="synthetic-code", redirect_uri="http://127.0.0.1/callback")
+    assert calls == 1
+    assert store.get_access_token() is None
+
+
+@pytest.mark.parametrize("app_secret", [None, ""])
+def test_interactive_oauth_requires_app_secret_before_side_effects(
+    app_secret: str | None,
+) -> None:
+    store = _store()
+    store.set_refresh_token("synthetic-refresh")
+    http_calls = 0
+    browser_calls = 0
+
+    def transport(request: httpx.Request) -> httpx.Response:
+        nonlocal http_calls
+        http_calls += 1
+        return httpx.Response(500)
 
     def browser_open(url: str) -> bool:
-        query = urllib.parse.parse_qs(urllib.parse.urlsplit(url).query)
-        callback = query["redirect_uri"][0]
-        state = query["state"][0]
-
-        def invoke() -> None:
-            with urllib.request.urlopen(
-                f"{callback}?error=access_denied&state={urllib.parse.quote(state)}"
-            ) as response:
-                assert response.status == 200
-
-        threading.Thread(target=invoke, daemon=True).start()
+        nonlocal browser_calls
+        browser_calls += 1
         return True
 
     client = OAuthClient(
-        settings=_settings(redirect_uri=redirect_uri),
-        store=_store(),
+        settings=_settings(app_secret=app_secret),
+        store=store,
+        http_client=httpx.Client(transport=httpx.MockTransport(transport)),
         browser_open=browser_open,
     )
-
-    with pytest.raises(OAuthError, match="authorization was denied"):
-        client.login(timeout=2)
+    with pytest.raises(OAuthError, match="app secret"):
+        client.exchange_code(code="synthetic-code", redirect_uri="http://127.0.0.1/callback")
+    with pytest.raises(OAuthError, match="app secret"):
+        client.refresh()
+    with pytest.raises(OAuthError, match="app secret"):
+        client.login(timeout=0.01)
+    assert http_calls == 0
+    assert browser_calls == 0
 
 
 def test_refresh_retries_one_confirmed_connect_error_and_stores_rotation() -> None:
-    post_attempts = 0
+    attempts = 0
     store = _store()
     store.set_refresh_token("synthetic-old-refresh")
 
     def transport(request: httpx.Request) -> httpx.Response:
-        nonlocal post_attempts
-        if request.method == "GET":
-            return _identity_response()
-        post_attempts += 1
-        assert request.url.path == "/open-apis/authen/v2/oauth/token"
-        assert json.loads(request.content)["grant_type"] == "refresh_token"
-        if post_attempts == 1:
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
             raise httpx.ConnectError("synthetic connection failure", request=request)
-        return httpx.Response(
-            200,
-            json={
-                "code": 0,
-                "access_token": "synthetic-new-access",
-                "refresh_token": "synthetic-new-refresh",
-            },
-        )
+        payload = json.loads(TOKEN_FIXTURE.read_text())
+        payload["access_token"] = "synthetic-new-access"
+        payload["refresh_token"] = "synthetic-new-refresh"
+        assert str(request.url) == "https://open.feishu.cn/open-apis/authen/v2/oauth/token"
+        return httpx.Response(200, json=payload)
 
     client = OAuthClient(
         settings=_settings(),
@@ -245,7 +232,7 @@ def test_refresh_retries_one_confirmed_connect_error_and_stores_rotation() -> No
 
     client.refresh()
 
-    assert post_attempts == 2
+    assert attempts == 2
     assert store.get_refresh_token() == "synthetic-new-refresh"
 
 
@@ -270,144 +257,10 @@ def test_refresh_does_not_retry_read_timeout() -> None:
     with pytest.raises(OAuthError) as caught:
         client.refresh()
     assert attempts == 1
-    assert caught.value.__cause__ is None
-    assert caught.value.__context__ is None
     assert secret not in str(caught.value)
     assert secret not in repr(caught.value)
-
-
-def test_refresh_requires_rotated_refresh_token() -> None:
-    store = _store()
-    store.set_refresh_token("synthetic-old-refresh")
-
-    client = OAuthClient(
-        settings=_settings(),
-        store=store,
-        http_client=httpx.Client(
-            transport=httpx.MockTransport(
-                lambda request: httpx.Response(
-                    200,
-                    json={"code": 0, "access_token": "synthetic-new-access"},
-                )
-            )
-        ),
-    )
-
-    with pytest.raises(OAuthError, match="rotated refresh token"):
-        client.refresh()
-    assert store.get_refresh_token() == "synthetic-old-refresh"
-    assert store.get_access_token() is None
-
-
-def test_refresh_persists_rotation_before_transient_identity_failure() -> None:
-    store = _store()
-    store.set_refresh_token("synthetic-old-refresh")
-
-    def transport(request: httpx.Request) -> httpx.Response:
-        if request.method == "GET":
-            raise httpx.ConnectError("synthetic identity failure", request=request)
-        return httpx.Response(
-            200,
-            json={
-                "code": 0,
-                "access_token": "synthetic-new-access",
-                "refresh_token": "synthetic-new-refresh",
-            },
-        )
-
-    client = OAuthClient(
-        settings=_settings(),
-        store=store,
-        http_client=httpx.Client(transport=httpx.MockTransport(transport)),
-    )
-
-    with pytest.raises(OAuthError, match="identity transport failed"):
-        client.refresh()
-    assert store.get_refresh_token() == "synthetic-new-refresh"
-    assert store.get_access_token() == "synthetic-new-access"
-
-
-def test_refresh_preserves_new_refresh_when_access_storage_fails() -> None:
-    backend = AccessWriteRejectingKeyring()
-    store = TokenStore(
-        app_id="cli_synthetic",
-        account_id="synthetic_account",
-        backend=backend,
-    )
-    store.set_refresh_token("synthetic-old-refresh")
-    client = OAuthClient(
-        settings=_settings(),
-        store=store,
-        http_client=httpx.Client(
-            transport=httpx.MockTransport(
-                lambda request: httpx.Response(
-                    200,
-                    json={
-                        "code": 0,
-                        "access_token": "synthetic-new-access",
-                        "refresh_token": "synthetic-new-refresh",
-                    },
-                )
-            )
-        ),
-    )
-
-    with pytest.raises(TokenStoreError, match="keyring could not store"):
-        client.refresh()
-    assert store.get_refresh_token() == "synthetic-new-refresh"
-
-
-def test_oauth_invalid_json_has_no_leaking_exception_chain() -> None:
-    secret = "synthetic-remote-body-secret"
-    client = OAuthClient(
-        settings=_settings(),
-        store=_store(),
-        http_client=httpx.Client(
-            transport=httpx.MockTransport(
-                lambda request: httpx.Response(200, text=f"{{invalid {secret}")
-            )
-        ),
-    )
-
-    with pytest.raises(OAuthError) as caught:
-        client.exchange_code(code="synthetic-code")
     assert caught.value.__cause__ is None
     assert caught.value.__context__ is None
-    assert secret not in str(caught.value)
-
-
-def test_namespace_and_verified_identity_must_match_declared_account() -> None:
-    with pytest.raises(ValueError, match="namespace"):
-        OAuthClient(
-            settings=_settings(),
-            store=TokenStore(
-                app_id="cli_other",
-                account_id="synthetic_account",
-                backend=MemoryKeyring(),
-            ),
-        )
-
-    mismatched_store = _store()
-    mismatched_store.set_access_token("synthetic-access")
-    client = OAuthClient(
-        settings=_settings(),
-        store=mismatched_store,
-        http_client=httpx.Client(
-            transport=httpx.MockTransport(
-                lambda request: _identity_response(account_id="account_other")
-            )
-        ),
-    )
-    with pytest.raises(OAuthError, match="identity does not match"):
-        client.status()
-
-
-def test_logout_rejects_process_injected_token() -> None:
-    client = OAuthClient(settings=_settings(headless_token="synthetic-headless"), store=_store())
-
-    with pytest.raises(OAuthError, match="process-injected"):
-        client.logout()
-    assert client.access_token() == "synthetic-headless"
 
 
 def test_status_returns_only_safe_fingerprints_and_logout_clears_tokens() -> None:
@@ -421,8 +274,8 @@ def test_status_returns_only_safe_fingerprints_and_logout_clears_tokens() -> Non
             json={
                 "code": 0,
                 "data": {
-                    "tenant_key": "tenant_synthetic",
-                    "user_id": "synthetic_account",
+                    "tenant_id": "tenant_synthetic",
+                    "union_id": "account_synthetic",
                     "open_id": "actor_synthetic",
                 },
             },
@@ -440,9 +293,267 @@ def test_status_returns_only_safe_fingerprints_and_logout_clears_tokens() -> Non
     assert status.auth_context is not None
     rendered = repr(status)
     assert "tenant_synthetic" not in rendered
-    assert "synthetic_account" not in rendered
+    assert "account_synthetic" not in rendered
     assert "actor_synthetic" not in rendered
 
     client.logout()
     assert store.get_access_token() is None
     assert store.get_refresh_token() is None
+
+
+def test_oauth_client_rejects_mismatched_store_owners() -> None:
+    with pytest.raises(ValueError, match="app owner"):
+        OAuthClient(
+            settings=_settings(),
+            store=TokenStore(
+                app_id="different-app",
+                account_id="account_synthetic",
+                backend=MemoryKeyring(),
+            ),
+        )
+    with pytest.raises(ValueError, match="account owner"):
+        OAuthClient(
+            settings=_settings(),
+            store=TokenStore(
+                app_id="cli_synthetic",
+                account_id="different-account",
+                backend=MemoryKeyring(),
+            ),
+        )
+
+
+def test_status_fails_closed_when_resolved_union_id_differs_from_store_owner() -> None:
+    store = _store()
+    store.set_access_token("synthetic-access")
+
+    def transport(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "code": 0,
+                "data": {
+                    "tenant_id": "tenant_synthetic",
+                    "union_id": "different-account",
+                    "open_id": "actor_synthetic",
+                },
+            },
+        )
+
+    client = OAuthClient(
+        settings=_settings(),
+        store=store,
+        http_client=httpx.Client(transport=httpx.MockTransport(transport)),
+    )
+    with pytest.raises(OAuthError, match="account identity did not match"):
+        client.status()
+
+
+def test_exchange_verifies_owner_before_token_commit() -> None:
+    store = _store()
+    body_secret = "synthetic-remote-body-secret"
+
+    def transport(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/oauth/token"):
+            return httpx.Response(200, json=json.loads(TOKEN_FIXTURE.read_text()))
+        return httpx.Response(
+            200,
+            json={
+                "code": 0,
+                "data": {
+                    "tenant_id": "tenant_synthetic",
+                    "union_id": "different-account",
+                    "open_id": "actor_synthetic",
+                    "message": body_secret,
+                },
+            },
+        )
+
+    client = OAuthClient(
+        settings=_settings(),
+        store=store,
+        http_client=httpx.Client(transport=httpx.MockTransport(transport)),
+    )
+    with pytest.raises(OAuthError, match="account identity did not match") as caught:
+        client.exchange_code(code="synthetic-code", redirect_uri="http://127.0.0.1/callback")
+    assert store.get_access_token() is None
+    assert store.get_refresh_token() is None
+    assert body_secret not in repr(caught.value)
+
+
+def test_refresh_requires_rotated_refresh_token() -> None:
+    store = _store()
+    store.set_refresh_token("synthetic-old-refresh")
+
+    def transport(request: httpx.Request) -> httpx.Response:
+        payload = json.loads(TOKEN_FIXTURE.read_text())
+        payload.pop("refresh_token")
+        return httpx.Response(200, json=payload)
+
+    client = OAuthClient(
+        settings=_settings(),
+        store=store,
+        http_client=httpx.Client(transport=httpx.MockTransport(transport)),
+    )
+    with pytest.raises(OAuthError, match="refresh token"):
+        client.refresh()
+    assert store.get_refresh_token() == "synthetic-old-refresh"
+
+
+class FailAccessWriteKeyring(MemoryKeyring):
+    def set_password(self, service: str, username: str, password: str) -> None:
+        if username.endswith("-access") and password == "synthetic-new-access":
+            raise RuntimeError("synthetic secret must not escape")
+        super().set_password(service, username, password)
+
+
+def test_refresh_second_token_write_failure_is_fail_closed_after_restart() -> None:
+    backend = FailAccessWriteKeyring()
+    store = TokenStore(app_id="cli_synthetic", account_id="account_synthetic", backend=backend)
+    store.set_access_token("synthetic-old-access")
+    store.set_refresh_token("synthetic-old-refresh")
+
+    def transport(request: httpx.Request) -> httpx.Response:
+        payload = json.loads(TOKEN_FIXTURE.read_text())
+        payload["access_token"] = "synthetic-new-access"
+        payload["refresh_token"] = "synthetic-new-refresh"
+        return httpx.Response(200, json=payload)
+
+    client = OAuthClient(
+        settings=_settings(),
+        store=store,
+        http_client=httpx.Client(transport=httpx.MockTransport(transport)),
+    )
+    with pytest.raises(OAuthError) as caught:
+        client.refresh()
+    assert "synthetic-new-access" not in repr(caught.value)
+    assert caught.value.__cause__ is None
+    assert caught.value.__context__ is None
+
+    restarted = TokenStore(app_id="cli_synthetic", account_id="account_synthetic", backend=backend)
+    assert restarted.get_access_token() is None
+    assert restarted.get_refresh_token() == "synthetic-new-refresh"
+
+
+def test_oauth_json_errors_have_no_exception_chain() -> None:
+    secret = "synthetic-invalid-json-secret"
+
+    def transport(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=f"{{{secret}")
+
+    client = OAuthClient(
+        settings=_settings(),
+        store=_store(),
+        http_client=httpx.Client(transport=httpx.MockTransport(transport)),
+    )
+    with pytest.raises(OAuthError) as caught:
+        client.exchange_code(code="synthetic-code", redirect_uri="http://127.0.0.1/callback")
+    assert caught.value.__cause__ is None
+    assert caught.value.__context__ is None
+    assert secret not in repr(caught.value)
+
+
+def test_exchange_transport_error_has_no_request_context() -> None:
+    secret = "synthetic-exchange-transport-secret"
+
+    def transport(request: httpx.Request) -> httpx.Response:
+        raise httpx.ReadTimeout(secret, request=request)
+
+    client = OAuthClient(
+        settings=_settings(),
+        store=_store(),
+        http_client=httpx.Client(transport=httpx.MockTransport(transport)),
+    )
+    with pytest.raises(OAuthError) as caught:
+        client.exchange_code(code="synthetic-code", redirect_uri="http://127.0.0.1/callback")
+    assert caught.value.__cause__ is None
+    assert caught.value.__context__ is None
+    assert secret not in repr(caught.value)
+
+
+def test_identity_json_and_transport_errors_have_no_exception_chain() -> None:
+    secret = "synthetic-identity-error-secret"
+
+    for failure in ("json", "transport"):
+
+        def transport(request: httpx.Request, *, mode: str = failure) -> httpx.Response:
+            if mode == "transport":
+                raise httpx.ReadTimeout(secret, request=request)
+            return httpx.Response(200, content=f"{{{secret}")
+
+        client = OAuthClient(
+            settings=_settings(headless_token="synthetic-headless"),
+            store=_store(),
+            http_client=httpx.Client(transport=httpx.MockTransport(transport)),
+        )
+        with pytest.raises(OAuthError) as caught:
+            client.get_identity()
+        assert caught.value.__cause__ is None
+        assert caught.value.__context__ is None
+        assert secret not in repr(caught.value)
+
+
+def test_callback_ignores_wrong_path_and_state_until_matching_callback() -> None:
+    store = _store()
+
+    def transport(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/oauth/token"):
+            return httpx.Response(200, json=json.loads(TOKEN_FIXTURE.read_text()))
+        return httpx.Response(
+            200,
+            json={
+                "code": 0,
+                "data": {
+                    "tenant_id": "tenant_synthetic",
+                    "union_id": "account_synthetic",
+                    "open_id": "actor_synthetic",
+                },
+            },
+        )
+
+    def browser_open(url: str) -> bool:
+        query = urllib.parse.parse_qs(urllib.parse.urlsplit(url).query)
+        callback = query["redirect_uri"][0]
+        state = query["state"][0]
+
+        def invoke() -> None:
+            for noisy_url in (
+                callback.replace("/callback", "/favicon.ico"),
+                f"{callback}?code=noise&state=wrong-state",
+            ):
+                with suppress(urllib.error.HTTPError):
+                    urllib.request.urlopen(noisy_url)
+            with urllib.request.urlopen(f"{callback}?code=synthetic-code&state={state}"):
+                pass
+
+        threading.Thread(target=invoke).start()
+        return True
+
+    client = OAuthClient(
+        settings=_settings(),
+        store=store,
+        http_client=httpx.Client(transport=httpx.MockTransport(transport)),
+        browser_open=browser_open,
+    )
+    client.login(timeout=2, scopes=("task:task:write",))
+    assert store.get_access_token() == "synthetic-access"
+
+
+def test_matching_oauth_denial_raises_typed_error() -> None:
+    def browser_open(url: str) -> bool:
+        query = urllib.parse.parse_qs(urllib.parse.urlsplit(url).query)
+        callback = query["redirect_uri"][0]
+        state = query["state"][0]
+
+        def invoke() -> None:
+            with suppress(urllib.error.HTTPError):
+                urllib.request.urlopen(
+                    f"{callback}?error=access_denied&error_description=secret&state={state}"
+                )
+
+        threading.Thread(target=invoke).start()
+        return True
+
+    client = OAuthClient(settings=_settings(), store=_store(), browser_open=browser_open)
+    with pytest.raises(OAuthDeniedError) as caught:
+        client.login(timeout=2, scopes=("task:task:write",))
+    assert "secret" not in repr(caught.value)

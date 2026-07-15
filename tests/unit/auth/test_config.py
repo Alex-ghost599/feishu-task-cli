@@ -7,8 +7,13 @@ from pathlib import Path
 import pytest
 from typer.testing import CliRunner
 
-from feishu_task_cli.auth.config import Settings, UnsafeConfigError
+from feishu_task_cli.auth.config import ConfigError, Settings, UnsafeConfigError
 from feishu_task_cli.cli import app
+
+
+def _assert_no_exception_chain(error: BaseException) -> None:
+    assert error.__cause__ is None
+    assert error.__context__ is None
 
 
 def _secret(label: str) -> str:
@@ -63,51 +68,12 @@ def test_secure_config_and_environment_secrets_are_redacted(tmp_path: Path) -> N
 def test_invalid_environment_value_does_not_appear_in_validation_error() -> None:
     secret = _secret("invalid-origin")
 
-    with pytest.raises(ValueError) as caught:
+    with pytest.raises(ConfigError) as caught:
         Settings.load(environ={"FEISHU_API_ORIGIN": secret})
 
     assert secret not in str(caught.value)
     assert secret not in repr(caught.value)
-
-
-def test_invalid_origin_port_is_not_retained_as_exception_cause() -> None:
-    with pytest.raises(ValueError) as caught:
-        Settings.load(environ={"FEISHU_API_ORIGIN": "https://example.test:private-value"})
-
-    assert caught.value.__cause__ is None
-    assert caught.value.__context__ is None
-
-
-@pytest.mark.parametrize(
-    "redirect_uri",
-    [
-        "http://127.0.0.1/callback",
-        "http://127.0.0.1:0/callback",
-        "http://localhost:8765/callback",
-        "https://127.0.0.1:8765/callback",
-        "http://127.0.0.1:8765/",
-        "http://127.0.0.1:8765/callback?unsafe=1",
-    ],
-)
-def test_oauth_redirect_uri_must_be_fixed_exact_loopback(redirect_uri: str) -> None:
-    with pytest.raises(ValueError, match="FEISHU_OAUTH_REDIRECT_URI"):
-        Settings.load(environ={"FEISHU_OAUTH_REDIRECT_URI": redirect_uri})
-
-
-def test_oauth_redirect_uri_and_scopes_load_explicitly() -> None:
-    settings = Settings.load(
-        environ={
-            "FEISHU_OAUTH_REDIRECT_URI": "http://127.0.0.1:8765/callback",
-            "FEISHU_OAUTH_SCOPES": "task:task:read offline_access task:task:write",
-        }
-    )
-
-    assert settings.oauth_redirect_uri == "http://127.0.0.1:8765/callback"
-    assert settings.oauth_scopes == (
-        "offline_access",
-        "task:task:read",
-        "task:task:write",
-    )
+    _assert_no_exception_chain(caught.value)
 
 
 def test_secret_config_must_be_a_regular_file(tmp_path: Path) -> None:
@@ -119,8 +85,7 @@ def test_secret_config_must_be_a_regular_file(tmp_path: Path) -> None:
 
     with pytest.raises(UnsafeConfigError, match="regular file") as caught:
         Settings.load(config_path=link, environ={})
-    assert caught.value.__cause__ is None
-    assert caught.value.__context__ is None
+    _assert_no_exception_chain(caught.value)
 
 
 def test_malformed_private_config_does_not_leak_its_content(tmp_path: Path) -> None:
@@ -129,25 +94,173 @@ def test_malformed_private_config_does_not_leak_its_content(tmp_path: Path) -> N
     path.write_text(f"app_secret: [{secret}")
     path.chmod(0o600)
 
-    with pytest.raises(ValueError) as caught:
+    with pytest.raises(ConfigError) as caught:
         Settings.load(config_path=path, environ={})
 
     assert secret not in str(caught.value)
     assert secret not in repr(caught.value)
-    assert caught.value.__cause__ is None
-    assert caught.value.__context__ is None
+    _assert_no_exception_chain(caught.value)
 
 
-def test_invalid_utf8_private_config_does_not_leak_raw_bytes(tmp_path: Path) -> None:
-    secret = b"synthetic-binary-secret"
+@pytest.mark.parametrize(
+    "origin",
+    [
+        "http://open.feishu.cn",
+        "https://evil.example",
+        "https://user@open.feishu.cn",
+        "https://open.feishu.cn/path",
+        "https://open.feishu.cn/",
+        "https://open.feishu.cn?query=1",
+        "https://open.feishu.cn#fragment",
+        "https://open.feishu.cn:443",
+        "https://[",
+    ],
+)
+def test_settings_constructor_rejects_noncanonical_feishu_origin(origin: str) -> None:
+    with pytest.raises(ConfigError, match="official Feishu API origin") as caught:
+        Settings(api_origin=origin, app_id="cli_synthetic")
+    _assert_no_exception_chain(caught.value)
+
+
+def test_config_decode_and_field_type_fail_with_typed_safe_error(tmp_path: Path) -> None:
     path = tmp_path / "auth.yaml"
-    path.write_bytes(b"app_secret: " + secret + b"\xff")
+    path.write_bytes(b"app_id: \xff\xfe\n")
     path.chmod(0o600)
 
-    with pytest.raises(ValueError, match="could not be read") as caught:
+    with pytest.raises(ConfigError) as decode_error:
+        Settings.load(config_path=path, environ={})
+    with pytest.raises(ConfigError) as type_error:
+        Settings.load(environ={"FEISHU_APP_ID": 123})  # type: ignore[dict-item]
+
+    assert "\\xff" not in repr(decode_error.value)
+    assert "123" not in repr(type_error.value)
+    _assert_no_exception_chain(decode_error.value)
+
+
+def test_config_read_error_does_not_retain_sensitive_cause(tmp_path: Path) -> None:
+    path = tmp_path / _secret("missing-file")
+
+    with pytest.raises(ConfigError) as caught:
         Settings.load(config_path=path, environ={})
 
-    assert caught.value.__cause__ is None
-    assert caught.value.__context__ is None
-    assert not hasattr(caught.value, "object")
-    assert secret.decode() not in repr(caught.value)
+    _assert_no_exception_chain(caught.value)
+    assert path.name not in repr(caught.value)
+
+
+def test_fstat_failure_is_typed_and_safe(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    path = tmp_path / "auth.yaml"
+    path.write_text("{}")
+    path.chmod(0o600)
+    secret = _secret("fstat-error")
+
+    def fail_fstat(descriptor: int) -> os.stat_result:
+        raise OSError(secret)
+
+    monkeypatch.setattr(os, "fstat", fail_fstat)
+    with pytest.raises(ConfigError) as caught:
+        Settings.load(config_path=path, environ={})
+    _assert_no_exception_chain(caught.value)
+    assert secret not in repr(caught.value)
+
+
+def test_fdopen_failure_is_typed_and_safe(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    path = tmp_path / "auth.yaml"
+    path.write_text("{}")
+    path.chmod(0o600)
+    secret = _secret("fdopen-error")
+
+    def fail_fdopen(descriptor: int, *, encoding: str) -> object:
+        raise OSError(secret)
+
+    monkeypatch.setattr(os, "fdopen", fail_fdopen)
+    with pytest.raises(ConfigError) as caught:
+        Settings.load(config_path=path, environ={})
+    _assert_no_exception_chain(caught.value)
+    assert secret not in repr(caught.value)
+
+
+def test_handle_close_failure_is_typed_and_safe(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "auth.yaml"
+    path.write_text("{}")
+    path.chmod(0o600)
+    secret = _secret("handle-close-error")
+    original_close = os.close
+
+    class CloseFailHandle:
+        def __init__(self, descriptor: int) -> None:
+            self.descriptor = descriptor
+
+        def __enter__(self) -> CloseFailHandle:
+            return self
+
+        def read(self, size: int = -1) -> str:
+            return "{}"
+
+        def __exit__(self, *args: object) -> None:
+            original_close(self.descriptor)
+            raise OSError(secret)
+
+    def close_fail_fdopen(descriptor: int, *, encoding: str) -> CloseFailHandle:
+        return CloseFailHandle(descriptor)
+
+    monkeypatch.setattr(os, "fdopen", close_fail_fdopen)
+    with pytest.raises(ConfigError) as caught:
+        Settings.load(config_path=path, environ={})
+    _assert_no_exception_chain(caught.value)
+    assert secret not in repr(caught.value)
+
+
+def test_final_close_error_does_not_override_primary_safe_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    primary_secret = _secret("primary-error")
+    close_secret = _secret("close-error")
+    monkeypatch.setattr(os, "open", lambda *args: 999)
+
+    def fail_fstat(descriptor: int) -> os.stat_result:
+        raise OSError(primary_secret)
+
+    def fail_close(descriptor: int) -> None:
+        raise OSError(close_secret)
+
+    monkeypatch.setattr(os, "fstat", fail_fstat)
+    monkeypatch.setattr(os, "close", fail_close)
+    with pytest.raises(ConfigError) as caught:
+        Settings.load(config_path="synthetic", environ={})
+    _assert_no_exception_chain(caught.value)
+    assert primary_secret not in repr(caught.value)
+    assert close_secret not in repr(caught.value)
+
+
+def test_handle_read_failure_has_no_exception_chain(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "auth.yaml"
+    path.write_text("{}")
+    path.chmod(0o600)
+    secret = _secret("handle-read-error")
+    original_close = os.close
+
+    class ReadFailHandle:
+        def __init__(self, descriptor: int) -> None:
+            self.descriptor = descriptor
+
+        def __enter__(self) -> ReadFailHandle:
+            return self
+
+        def read(self, size: int = -1) -> str:
+            raise OSError(secret)
+
+        def __exit__(self, *args: object) -> None:
+            original_close(self.descriptor)
+
+    def read_fail_fdopen(descriptor: int, *, encoding: str) -> ReadFailHandle:
+        return ReadFailHandle(descriptor)
+
+    monkeypatch.setattr(os, "fdopen", read_fail_fdopen)
+    with pytest.raises(ConfigError) as caught:
+        Settings.load(config_path=path, environ={})
+    _assert_no_exception_chain(caught.value)
+    assert secret not in repr(caught.value)
