@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+import httpx
 import pytest
 
 from feishu_task_cli import __version__
@@ -34,8 +35,8 @@ from feishu_task_cli.errors import (
     PreconditionChangedError,
     ReplayBlockedError,
 )
-from feishu_task_cli.feishu.client import FeishuAPIError, FeishuTransportError
-from feishu_task_cli.feishu.tasks import MutationResult, TaskSnapshot
+from feishu_task_cli.feishu.client import FeishuAPIError, FeishuClient, FeishuTransportError
+from feishu_task_cli.feishu.tasks import MutationResult, TaskGateway, TaskSnapshot
 from feishu_task_cli.journal.store import ExecutionJournal, ExecutionState
 
 NOW = datetime(2026, 1, 2, 3, 4, 5, tzinfo=UTC)
@@ -412,6 +413,55 @@ def test_policy_rejection_maps_to_exit_4_without_journal_or_mutation(tmp_path: P
     assert exit_code_for_error(caught.value) == 4
     assert gateway.mutations == 0
     assert ExecutionJournal(tmp_path).status(plan.plan_hash) is None
+
+
+def test_credential_shaped_precondition_drift_blocks_mutation(tmp_path: Path) -> None:
+    get_count = 0
+    mutation_count = 0
+
+    def transport(request: httpx.Request) -> httpx.Response:
+        nonlocal get_count, mutation_count
+        if request.method == "GET":
+            get_count += 1
+            summary = "Bearer abcdefgh123" if get_count == 1 else "Bearer zyxwvuts987"
+            return httpx.Response(
+                200,
+                json={
+                    "code": 0,
+                    "data": {"task": {"guid": "task_synthetic", "summary": summary}},
+                },
+            )
+        mutation_count += 1
+        return httpx.Response(
+            200,
+            json={"code": 0, "data": {"task": {"guid": "task_synthetic"}}},
+        )
+
+    gateway = TaskGateway(
+        FeishuClient(
+            api_origin="https://open.feishu.cn",
+            access_token="synthetic-access-token-value",
+            http_client=httpx.Client(transport=httpx.MockTransport(transport)),
+        )
+    )
+    before = gateway.get("task_synthetic")
+    plan = existing_plan(before)
+    guarded_executor = Executor(
+        gateway,
+        auth_context_resolver=lambda: AUTH,
+        journal=ExecutionJournal(tmp_path / "journal"),
+        now=lambda: NOW + timedelta(seconds=2),
+    )
+
+    with pytest.raises(PreconditionChangedError):
+        guarded_executor.execute(
+            plan,
+            approved(plan),
+            build_neutral_policy(created_at=NOW),
+            "agent-executor",
+        )
+
+    assert mutation_count == 0
 
 
 def test_tampered_plan_is_rejected_before_mutation(tmp_path: Path) -> None:

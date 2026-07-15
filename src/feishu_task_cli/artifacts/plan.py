@@ -49,10 +49,7 @@ class FindingSeverity(StrEnum):
 class AuthContext(StrictModel):
     model_config = ConfigDict(hide_input_in_errors=True)
 
-    api_origin: Annotated[
-        str,
-        Field(pattern=r"^https://[A-Za-z0-9.-]+(?::[0-9]+)?$"),
-    ]
+    api_origin: Literal["https://open.feishu.cn"]
     app_id_fingerprint: Fingerprint
     tenant_fingerprint: Fingerprint
     account_fingerprint: Fingerprint
@@ -72,9 +69,9 @@ class AuthContext(StrictModel):
         """Return the safe acting-user display fingerprint."""
         return self.acting_user_display
 
-    @field_validator("api_origin")
+    @field_validator("api_origin", mode="before")
     @classmethod
-    def validate_api_origin(cls, value: str) -> str:
+    def validate_api_origin(cls, value: object) -> object:
         if value != "https://open.feishu.cn":
             raise ValueError("api_origin must be the official Feishu API origin")
         return value
@@ -125,6 +122,15 @@ class ValidationFinding(StrictModel):
 
 
 class PlanContentV1(ArtifactV1):
+    model_config = ConfigDict(
+        json_schema_extra={
+            "x-runtime-validation-required": [
+                "action-specific target, precondition, field, and assignee invariants",
+                "observed_before SHA-256 binding to precondition_fingerprint",
+            ]
+        }
+    )
+
     artifact_type: Literal["plan"] = "plan"
     plan_id: NonEmptyString
     action: Action
@@ -155,6 +161,8 @@ class PlanContentV1(ArtifactV1):
         else:
             if self.target.task_guid is None:
                 raise ValueError(f"{self.action.value} plan requires target.task_guid")
+            if self.target.tasklist_guid is not None:
+                raise ValueError(f"{self.action.value} plan cannot contain target.tasklist_guid")
             if self.observed_before is None or self.precondition_fingerprint is None:
                 raise ValueError(
                     f"{self.action.value} plan requires observed_before and "

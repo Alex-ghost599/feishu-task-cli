@@ -151,6 +151,31 @@ def test_create_rejects_existing_task_precondition() -> None:
         PlanV1.build(**payload)
 
 
+@pytest.mark.parametrize("action", [Action.UPDATE, Action.ASSIGN, Action.COMPLETE])
+def test_existing_task_actions_reject_unused_tasklist_target(action: Action) -> None:
+    values = existing_task_plan().model_dump(exclude={"plan_hash"})
+    values.update(
+        action=action,
+        target=TaskTarget(task_guid="task_example", tasklist_guid="tasklist_unused"),
+    )
+    if action is Action.ASSIGN:
+        assignee = AssigneeRef(
+            identifier_type=AssigneeIdentifierType.OPEN_ID,
+            identifier="ou_example",
+        )
+        values.update(
+            requested_fields={
+                "assignees": [{"identifier_type": "open_id", "identifier": "ou_example"}]
+            },
+            assignees=(assignee,),
+        )
+    elif action is Action.COMPLETE:
+        values["requested_fields"] = {"completed_at": "0"}
+
+    with pytest.raises(ValidationError, match="tasklist_guid"):
+        PlanV1.build(**values)
+
+
 @pytest.mark.parametrize(
     ("action", "requested_fields", "assignees"),
     [
