@@ -1,0 +1,24 @@
+name: Feature request
+description: Propose an Agent-native Feishu Task capability
+title: "feat: "
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Agent workflow problem
+    validations:
+      required: true
+  - type: textarea
+    id: contract
+    attributes:
+      label: Proposed machine contract
+      description: Describe JSON inputs, outputs, errors, and user presentation.
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance criteria
+    validations:
+      required: true

@@ -1,0 +1,78 @@
+[build-system]
+requires = ["setuptools>=80", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "feishu-task-cli"
+version = "0.0.0"
+description = "Agent-native, review-gated Feishu Task CLI"
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.11"
+authors = [{ name = "Yizhuo Liang" }]
+classifiers = [
+  "Development Status :: 2 - Pre-Alpha",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+]
+dependencies = [
+  "filelock>=3.18,<4",
+  "httpx>=0.28,<1",
+  "keyring>=25.6,<27",
+  "platformdirs>=4.3,<5",
+  "pydantic>=2.11,<3",
+  "PyYAML>=6.0,<7",
+  "rfc8785>=0.1.4,<1",
+  "typer>=0.16,<1",
+]
+
+[project.optional-dependencies]
+test = [
+  "build>=1.2,<2",
+  "mypy>=1.16,<2",
+  "pip-audit>=2.9,<3",
+  "pytest>=8.4,<10",
+  "pytest-cov>=6,<8",
+  "respx>=0.22,<1",
+  "ruff>=0.12,<1",
+  "twine>=6.1,<7",
+  "types-PyYAML>=6.0,<7",
+]
+
+[project.urls]
+Homepage = "https://github.com/Alex-ghost599/feishu-task-cli"
+Issues = "https://github.com/Alex-ghost599/feishu-task-cli/issues"
+
+[project.scripts]
+feishu-task = "feishu_task_cli.cli:app"
+
+[tool.setuptools]
+package-dir = { "" = "src" }
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+pythonpath = [".", "src"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+files = ["src", "scripts"]
+
+[tool.coverage.run]
+source = ["feishu_task_cli"]
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = true
