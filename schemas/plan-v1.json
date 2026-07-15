@@ -1,0 +1,297 @@
+{
+  "$defs": {
+    "Action": {
+      "enum": [
+        "create",
+        "update",
+        "assign",
+        "complete"
+      ],
+      "title": "Action",
+      "type": "string"
+    },
+    "AssigneeIdentifierType": {
+      "enum": [
+        "open_id",
+        "user_id",
+        "union_id"
+      ],
+      "title": "AssigneeIdentifierType",
+      "type": "string"
+    },
+    "AssigneeRef": {
+      "additionalProperties": false,
+      "properties": {
+        "display_name": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Display Name"
+        },
+        "identifier": {
+          "title": "Identifier",
+          "type": "string"
+        },
+        "identifier_type": {
+          "$ref": "#/$defs/AssigneeIdentifierType"
+        }
+      },
+      "required": [
+        "identifier_type",
+        "identifier"
+      ],
+      "title": "AssigneeRef",
+      "type": "object"
+    },
+    "AuthContext": {
+      "additionalProperties": false,
+      "properties": {
+        "account_display": {
+          "pattern": "^[0-9a-f]{12}$",
+          "title": "Account Display",
+          "type": "string"
+        },
+        "account_fingerprint": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Account Fingerprint",
+          "type": "string"
+        },
+        "acting_user_display": {
+          "pattern": "^[0-9a-f]{12}$",
+          "title": "Acting User Display",
+          "type": "string"
+        },
+        "acting_user_fingerprint": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Acting User Fingerprint",
+          "type": "string"
+        },
+        "api_origin": {
+          "title": "Api Origin",
+          "type": "string"
+        },
+        "app_id_display": {
+          "pattern": "^[0-9a-f]{12}$",
+          "title": "App Id Display",
+          "type": "string"
+        },
+        "app_id_fingerprint": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "App Id Fingerprint",
+          "type": "string"
+        },
+        "tenant_display": {
+          "pattern": "^[0-9a-f]{12}$",
+          "title": "Tenant Display",
+          "type": "string"
+        },
+        "tenant_fingerprint": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Tenant Fingerprint",
+          "type": "string"
+        }
+      },
+      "required": [
+        "api_origin",
+        "app_id_fingerprint",
+        "tenant_fingerprint",
+        "account_fingerprint",
+        "acting_user_fingerprint",
+        "app_id_display",
+        "tenant_display",
+        "account_display",
+        "acting_user_display"
+      ],
+      "title": "AuthContext",
+      "type": "object"
+    },
+    "FindingSeverity": {
+      "enum": [
+        "info",
+        "warning",
+        "error"
+      ],
+      "title": "FindingSeverity",
+      "type": "string"
+    },
+    "JsonValue": {},
+    "TaskTarget": {
+      "additionalProperties": false,
+      "properties": {
+        "task_guid": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Task Guid"
+        },
+        "tasklist_guid": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Tasklist Guid"
+        }
+      },
+      "title": "TaskTarget",
+      "type": "object"
+    },
+    "ValidationFinding": {
+      "additionalProperties": false,
+      "properties": {
+        "code": {
+          "title": "Code",
+          "type": "string"
+        },
+        "message": {
+          "title": "Message",
+          "type": "string"
+        },
+        "severity": {
+          "$ref": "#/$defs/FindingSeverity"
+        }
+      },
+      "required": [
+        "code",
+        "severity",
+        "message"
+      ],
+      "title": "ValidationFinding",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "action": {
+      "$ref": "#/$defs/Action"
+    },
+    "artifact_type": {
+      "const": "plan",
+      "default": "plan",
+      "title": "Artifact Type",
+      "type": "string"
+    },
+    "assignees": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/AssigneeRef"
+      },
+      "title": "Assignees",
+      "type": "array"
+    },
+    "auth_context": {
+      "$ref": "#/$defs/AuthContext"
+    },
+    "created_at": {
+      "format": "date-time",
+      "title": "Created At",
+      "type": "string"
+    },
+    "expires_at": {
+      "format": "date-time",
+      "title": "Expires At",
+      "type": "string"
+    },
+    "observed_before": {
+      "anyOf": [
+        {
+          "additionalProperties": {
+            "$ref": "#/$defs/JsonValue"
+          },
+          "type": "object"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Observed Before"
+    },
+    "plan_hash": {
+      "default": "",
+      "title": "Plan Hash",
+      "type": "string"
+    },
+    "plan_id": {
+      "title": "Plan Id",
+      "type": "string"
+    },
+    "precondition_fingerprint": {
+      "anyOf": [
+        {
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Precondition Fingerprint"
+    },
+    "requested_fields": {
+      "additionalProperties": {
+        "$ref": "#/$defs/JsonValue"
+      },
+      "title": "Requested Fields",
+      "type": "object"
+    },
+    "required_scopes": {
+      "default": [],
+      "items": {
+        "type": "string"
+      },
+      "title": "Required Scopes",
+      "type": "array"
+    },
+    "schema_version": {
+      "const": "1",
+      "default": "1",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "target": {
+      "$ref": "#/$defs/TaskTarget"
+    },
+    "tool_version": {
+      "title": "Tool Version",
+      "type": "string"
+    },
+    "validation_findings": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/ValidationFinding"
+      },
+      "title": "Validation Findings",
+      "type": "array"
+    }
+  },
+  "required": [
+    "created_at",
+    "tool_version",
+    "plan_id",
+    "action",
+    "target",
+    "requested_fields",
+    "auth_context",
+    "expires_at"
+  ],
+  "title": "PlanV1",
+  "type": "object"
+}

@@ -1,0 +1,113 @@
+from __future__ import annotations
+
+import re
+from datetime import datetime
+from enum import StrEnum
+from typing import Annotated, Literal
+
+from pydantic import Field, JsonValue, field_validator, model_validator
+
+from feishu_task_cli.artifacts.base import ArtifactV1, StrictModel, bind_hash
+
+Fingerprint = Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")]
+DisplayFingerprint = Annotated[str, Field(pattern=r"^[0-9a-f]{12}$")]
+
+
+class Action(StrEnum):
+    CREATE = "create"
+    UPDATE = "update"
+    ASSIGN = "assign"
+    COMPLETE = "complete"
+
+
+class AssigneeIdentifierType(StrEnum):
+    OPEN_ID = "open_id"
+    USER_ID = "user_id"
+    UNION_ID = "union_id"
+
+
+class FindingSeverity(StrEnum):
+    INFO = "info"
+    WARNING = "warning"
+    ERROR = "error"
+
+
+class AuthContext(StrictModel):
+    api_origin: str
+    app_id_fingerprint: Fingerprint
+    tenant_fingerprint: Fingerprint
+    account_fingerprint: Fingerprint
+    acting_user_fingerprint: Fingerprint
+    app_id_display: DisplayFingerprint
+    tenant_display: DisplayFingerprint
+    account_display: DisplayFingerprint
+    acting_user_display: DisplayFingerprint
+
+    @field_validator("api_origin")
+    @classmethod
+    def validate_api_origin(cls, value: str) -> str:
+        if not re.fullmatch(r"https://[A-Za-z0-9.-]+(?::[0-9]+)?", value):
+            raise ValueError("api_origin must be an HTTPS origin without a path")
+        return value.lower()
+
+    @model_validator(mode="after")
+    def validate_display_fingerprints(self) -> AuthContext:
+        pairs = (
+            (self.app_id_fingerprint, self.app_id_display),
+            (self.tenant_fingerprint, self.tenant_display),
+            (self.account_fingerprint, self.account_display),
+            (self.acting_user_fingerprint, self.acting_user_display),
+        )
+        if any(not full.startswith(display) for full, display in pairs):
+            raise ValueError("display fingerprint must be a prefix of its full fingerprint")
+        return self
+
+
+class TaskTarget(StrictModel):
+    task_guid: str | None = None
+    tasklist_guid: str | None = None
+
+    @model_validator(mode="after")
+    def require_target(self) -> TaskTarget:
+        if self.task_guid is None and self.tasklist_guid is None:
+            raise ValueError("at least one task target identifier is required")
+        return self
+
+
+class AssigneeRef(StrictModel):
+    identifier_type: AssigneeIdentifierType
+    identifier: str
+    display_name: str | None = None
+
+
+class ValidationFinding(StrictModel):
+    code: str
+    severity: FindingSeverity
+    message: str
+
+
+class PlanV1(ArtifactV1):
+    artifact_type: Literal["plan"] = "plan"
+    plan_id: str
+    action: Action
+    target: TaskTarget
+    requested_fields: dict[str, JsonValue]
+    assignees: tuple[AssigneeRef, ...] = ()
+    validation_findings: tuple[ValidationFinding, ...] = ()
+    required_scopes: tuple[str, ...] = ()
+    auth_context: AuthContext
+    expires_at: datetime
+    observed_before: dict[str, JsonValue] | None = None
+    precondition_fingerprint: Fingerprint | None = None
+    plan_hash: str = ""
+
+    @field_validator("expires_at")
+    @classmethod
+    def require_utc_expiry(cls, value: datetime) -> datetime:
+        return cls.require_utc(value)
+
+    @model_validator(mode="after")
+    def validate_and_hash(self) -> PlanV1:
+        if self.expires_at <= self.created_at:
+            raise ValueError("expires_at must be later than created_at")
+        return bind_hash(self, "plan_hash")

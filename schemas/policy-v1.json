@@ -1,0 +1,142 @@
+{
+  "$defs": {
+    "Action": {
+      "enum": [
+        "create",
+        "update",
+        "assign",
+        "complete"
+      ],
+      "title": "Action",
+      "type": "string"
+    },
+    "AssigneeIdentifierType": {
+      "enum": [
+        "open_id",
+        "user_id",
+        "union_id"
+      ],
+      "title": "AssigneeIdentifierType",
+      "type": "string"
+    },
+    "CheckedFact": {
+      "enum": [
+        "action_checked",
+        "target_identity_checked",
+        "assignees_checked",
+        "schedule_checked",
+        "auth_context_checked",
+        "precondition_checked"
+      ],
+      "title": "CheckedFact",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "allowed_assignee_identifier_types": {
+      "default": [
+        "open_id",
+        "user_id",
+        "union_id"
+      ],
+      "items": {
+        "$ref": "#/$defs/AssigneeIdentifierType"
+      },
+      "title": "Allowed Assignee Identifier Types",
+      "type": "array"
+    },
+    "approved_actions": {
+      "default": [
+        "create",
+        "update",
+        "assign",
+        "complete"
+      ],
+      "items": {
+        "$ref": "#/$defs/Action"
+      },
+      "title": "Approved Actions",
+      "type": "array"
+    },
+    "artifact_type": {
+      "const": "policy",
+      "default": "policy",
+      "title": "Artifact Type",
+      "type": "string"
+    },
+    "created_at": {
+      "format": "date-time",
+      "title": "Created At",
+      "type": "string"
+    },
+    "max_plan_age_seconds": {
+      "anyOf": [
+        {
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Max Plan Age Seconds"
+    },
+    "max_review_age_seconds": {
+      "anyOf": [
+        {
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Max Review Age Seconds"
+    },
+    "policy_hash": {
+      "default": "",
+      "title": "Policy Hash",
+      "type": "string"
+    },
+    "reject_warnings": {
+      "default": false,
+      "title": "Reject Warnings",
+      "type": "boolean"
+    },
+    "require_independent_review": {
+      "default": false,
+      "title": "Require Independent Review",
+      "type": "boolean"
+    },
+    "required_checked_facts": {
+      "additionalProperties": {
+        "items": {
+          "$ref": "#/$defs/CheckedFact"
+        },
+        "type": "array"
+      },
+      "propertyNames": {
+        "$ref": "#/$defs/Action"
+      },
+      "title": "Required Checked Facts",
+      "type": "object"
+    },
+    "schema_version": {
+      "const": "1",
+      "default": "1",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "tool_version": {
+      "title": "Tool Version",
+      "type": "string"
+    }
+  },
+  "required": [
+    "created_at",
+    "tool_version"
+  ],
+  "title": "PolicyV1",
+  "type": "object"
+}
