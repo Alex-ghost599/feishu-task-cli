@@ -4,8 +4,10 @@ from collections.abc import Iterable
 from datetime import UTC, datetime, timedelta
 
 from feishu_task_cli import __version__
+from feishu_task_cli.artifacts.canonical import artifact_hash
 from feishu_task_cli.artifacts.plan import PlanV1
 from feishu_task_cli.artifacts.review import CheckedFact, ReviewV1, ReviewVerdict
+from feishu_task_cli.errors import ArtifactIntegrityError
 
 
 def build_review(
@@ -21,13 +23,15 @@ def build_review(
     expires_at: datetime | None = None,
     ttl_seconds: int = 900,
 ) -> ReviewV1:
-    """Build a canonical Review bound to the supplied Plan hash."""
+    """Build a Review that is cryptographically bound to the supplied Plan."""
+    if artifact_hash(plan, hash_field="plan_hash") != plan.plan_hash:
+        raise ArtifactIntegrityError("plan hash integrity check failed")
     if ttl_seconds <= 0:
         raise ValueError("ttl_seconds must be positive")
-    timestamp = created_at or datetime.now(UTC)
-    expiry = expires_at or timestamp + timedelta(seconds=ttl_seconds)
+    created = created_at or datetime.now(UTC)
+    expires = expires_at or created + timedelta(seconds=ttl_seconds)
     return ReviewV1.build(
-        created_at=timestamp,
+        created_at=created,
         tool_version=__version__,
         plan_hash=plan.plan_hash,
         reviewer_id=reviewer_id,
@@ -36,5 +40,5 @@ def build_review(
         checked_facts=tuple(checked_facts),
         warnings=tuple(warnings),
         reasons=tuple(reasons),
-        expires_at=expiry,
+        expires_at=expires,
     )

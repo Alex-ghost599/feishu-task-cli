@@ -7,4 +7,4 @@ class ArtifactIntegrityError(FeishuTaskError, ValueError):
 
 
 class PolicyRejectedError(FeishuTaskError, ValueError):
-    """Raised when declared review evidence does not satisfy execution policy."""
+    """Raised when an execution review does not satisfy the selected policy."""

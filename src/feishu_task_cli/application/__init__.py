@@ -1,1 +1,1 @@
-"""Application services for review and execution policy."""
+"""Agent-facing application services."""

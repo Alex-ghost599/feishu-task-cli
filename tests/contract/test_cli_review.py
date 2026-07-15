@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import subprocess
+import sys
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -14,7 +16,7 @@ NOW = datetime(2026, 1, 2, 3, 4, 5, tzinfo=UTC)
 
 
 def plan_json() -> str:
-    artifact = PlanV1.build(
+    plan = PlanV1.build(
         created_at=NOW,
         tool_version="0.0.0",
         plan_id="plan_example_cli",
@@ -34,24 +36,26 @@ def plan_json() -> str:
         ),
         expires_at=NOW + timedelta(days=3650),
     )
-    return json.dumps(artifact.model_dump(mode="json"))
+    return json.dumps(plan.model_dump(mode="json"))
 
 
-def review_args() -> list[str]:
-    return [
-        "review",
-        "--plan",
-        "-",
-        "--reviewer-id",
-        "agent-reviewer",
-        "--verdict",
-        "approved",
-    ]
-
-
-def test_review_reads_stdin_and_emits_one_json_artifact() -> None:
+def test_review_reads_plan_from_stdin_and_emits_one_json_artifact() -> None:
     result = runner.invoke(
-        app, [*review_args(), "--checked-fact", "action_checked"], input=plan_json()
+        app,
+        [
+            "review",
+            "--plan",
+            "-",
+            "--reviewer-id",
+            "agent-reviewer",
+            "--verdict",
+            "approved",
+            "--checked-fact",
+            "action_checked",
+            "--output",
+            "-",
+        ],
+        input=plan_json(),
     )
 
     assert result.exit_code == 0, result.output
@@ -62,13 +66,28 @@ def test_review_reads_stdin_and_emits_one_json_artifact() -> None:
     assert "created review" in result.stderr
 
 
-def test_review_file_output_is_atomic_and_stdout_is_envelope(tmp_path: Path) -> None:
+def test_review_file_output_is_atomic_and_stdout_is_result_envelope(tmp_path: Path) -> None:
     output = tmp_path / "review.json"
-    result = runner.invoke(app, [*review_args(), "--output", str(output)], input=plan_json())
+    result = runner.invoke(
+        app,
+        [
+            "review",
+            "--plan",
+            "-",
+            "--reviewer-id",
+            "agent-reviewer",
+            "--verdict",
+            "approved",
+            "--output",
+            str(output),
+        ],
+        input=plan_json(),
+    )
 
     assert result.exit_code == 0, result.output
+    envelope = json.loads(result.stdout)
     artifact = json.loads(output.read_text(encoding="utf-8"))
-    assert json.loads(result.stdout) == {
+    assert envelope == {
         "artifact_hash": artifact["review_hash"],
         "artifact_type": "review",
         "path": str(output),
@@ -76,17 +95,80 @@ def test_review_file_output_is_atomic_and_stdout_is_envelope(tmp_path: Path) -> 
     assert not list(tmp_path.glob("*.tmp"))
 
 
-def test_schema_show_emits_review_contract() -> None:
+def test_schema_show_emits_committed_contract() -> None:
     result = runner.invoke(app, ["schema", "show", "--artifact", "review"])
+
     assert result.exit_code == 0
-    assert json.loads(result.stdout)["properties"]["artifact_type"]["const"] == "review"
+    schema = json.loads(result.stdout)
+    committed = Path("schemas/review-v1.json").read_text(encoding="utf-8")
+    assert schema == json.loads(committed)
 
 
 def test_cli_does_not_accept_caller_supplied_review_relationship() -> None:
     result = runner.invoke(
         app,
-        [*review_args(), "--review-mode", "independent"],
+        [
+            "review",
+            "--plan",
+            "-",
+            "--reviewer-id",
+            "agent-reviewer",
+            "--verdict",
+            "approved",
+            "--review-mode",
+            "independent",
+        ],
         input=plan_json(),
     )
+
     assert result.exit_code != 0
     assert "No such option" in result.output
+
+
+def _run_real_cli(plan_input: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "feishu_task_cli",
+            "review",
+            "--plan",
+            "-",
+            "--reviewer-id",
+            "agent-reviewer",
+            "--verdict",
+            "approved",
+        ],
+        input=plan_input,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+
+def test_real_cli_invalid_json_is_redacted_agent_error() -> None:
+    result = _run_real_cli("{not-json")
+
+    assert result.returncode == 2
+    assert json.loads(result.stdout) == {
+        "error": {
+            "category": "input",
+            "code": "invalid_input",
+            "message": "Input could not be safely validated.",
+            "retryable": False,
+        }
+    }
+    assert result.stderr.strip() == "error: invalid_input"
+    assert "Traceback" not in result.stderr
+    assert "/Users/" not in result.stderr
+
+
+def test_real_cli_tampered_plan_uses_integrity_exit_code() -> None:
+    payload = json.loads(plan_json())
+    payload["requested_fields"] = {"summary": "Tampered"}
+    result = _run_real_cli(json.dumps(payload))
+
+    assert result.returncode == 8
+    assert json.loads(result.stdout)["error"]["code"] == "artifact_integrity_failed"
+    assert result.stderr.strip() == "error: artifact_integrity_failed"
+    assert "/Users/" not in result.stderr
