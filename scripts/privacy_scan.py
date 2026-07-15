@@ -23,7 +23,7 @@ uuid_value = (
 PATTERNS: tuple[Pattern, ...] = (
     (
         "personal_home_path",
-        re.compile("/" + r"(?:Users|home)/[A-Za-z0-9._-]+/(?!example(?:/|$))"),
+        re.compile("/" + r"(?:Users|home)/[A-Za-z0-9._-]+/"),
     ),
     (
         "authorization_value",
