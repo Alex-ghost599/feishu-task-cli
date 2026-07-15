@@ -121,8 +121,9 @@ def test_cli_does_not_accept_caller_supplied_review_relationship() -> None:
         input=plan_json(),
     )
 
-    assert result.exit_code != 0
-    assert "No such option" in result.output
+    assert result.exit_code == 2
+    assert json.loads(result.stdout)["error"]["code"] == "invalid_input"
+    assert result.stderr.strip() == "error: invalid_input"
 
 
 def _run_real_cli(plan_input: str) -> subprocess.CompletedProcess[str]:
@@ -155,12 +156,34 @@ def test_real_cli_invalid_json_is_redacted_agent_error() -> None:
             "category": "input",
             "code": "invalid_input",
             "message": "Input could not be safely validated.",
+            "next_action": "fix_invalid_input",
+            "next_action_mapping_version": "v1",
             "retryable": False,
         }
     }
     assert result.stderr.strip() == "error: invalid_input"
     assert "Traceback" not in result.stderr
     assert "/Users/" not in result.stderr
+
+
+def test_real_cli_parser_error_is_stable_json() -> None:
+    result = subprocess.run(
+        [sys.executable, "-m", "feishu_task_cli", "plan", "create"],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 2
+    assert json.loads(result.stdout)["error"] == {
+        "category": "input",
+        "code": "invalid_input",
+        "message": "Input could not be safely validated.",
+        "next_action": "fix_invalid_input",
+        "next_action_mapping_version": "v1",
+        "retryable": False,
+    }
+    assert result.stderr.strip() == "error: invalid_input"
 
 
 def test_real_cli_tampered_plan_uses_integrity_exit_code() -> None:
