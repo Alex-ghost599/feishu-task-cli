@@ -8,7 +8,7 @@ from feishu_task_cli.artifacts.plan import Action, PlanV1
 from feishu_task_cli.artifacts.policy import PolicyV1
 from feishu_task_cli.artifacts.receipt import DeclaredReviewRelationship
 from feishu_task_cli.artifacts.review import CheckedFact, ReviewV1, ReviewVerdict
-from feishu_task_cli.errors import PolicyRejectedError
+from feishu_task_cli.errors import ArtifactIntegrityError, PolicyRejectedError
 
 STRICT_REQUIRED_FACTS = {
     Action.CREATE: (
@@ -63,7 +63,7 @@ def build_strict_policy(*, created_at: datetime | None = None) -> PolicyV1:
 def _require_integrity(artifact: object, hash_field: str, label: str) -> None:
     supplied = getattr(artifact, hash_field)
     if artifact_hash(artifact, hash_field=hash_field) != supplied:
-        raise PolicyRejectedError(f"{label} hash integrity check failed")
+        raise ArtifactIntegrityError(f"{label} hash integrity check failed")
 
 
 def validate_execution_review(

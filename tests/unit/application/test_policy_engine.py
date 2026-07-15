@@ -144,7 +144,7 @@ def test_rejected_or_expired_review_is_blocked() -> None:
 
 def test_review_must_bind_current_plan_hash() -> None:
     other = plan().model_copy(update={"plan_hash": "9" * 64})
-    with pytest.raises(PolicyRejectedError, match="plan hash"):
+    with pytest.raises(ArtifactIntegrityError, match="plan hash"):
         validate_execution_review(other, review(), policy(), "agent-b", now=NOW)
 
 
