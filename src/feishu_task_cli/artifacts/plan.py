@@ -56,6 +56,16 @@ class AuthContext(StrictModel):
     account_display: DisplayFingerprint
     acting_user_display: DisplayFingerprint
 
+    @property
+    def actor_fingerprint(self) -> str:
+        """Return the acting-user fingerprint under the public actor terminology."""
+        return self.acting_user_fingerprint
+
+    @property
+    def actor_display(self) -> str:
+        """Return the safe acting-user display fingerprint."""
+        return self.acting_user_display
+
     @field_validator("api_origin")
     @classmethod
     def validate_api_origin(cls, value: str) -> str:
