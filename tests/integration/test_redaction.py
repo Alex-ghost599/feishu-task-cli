@@ -74,6 +74,14 @@ def test_redact_recursively_preserves_non_secret_structure() -> None:
     }
 
 
+def test_redact_blocks_generic_nested_credential_keys() -> None:
+    secret = _secret("generic")
+
+    value = redact({"nested": {"credential": secret, "password": secret}})
+
+    assert value == {"nested": {"credential": "[REDACTED]", "password": "[REDACTED]"}}
+
+
 def test_api_error_is_typed_redacted_and_accepts_only_safe_request_id() -> None:
     secret = _secret("remote")
 
@@ -179,5 +187,7 @@ def test_mutation_transport_is_attempted_once(
         client.request("POST", "/synthetic", json={"app_secret": secret})
 
     assert attempts == 1
+    assert caught.value.__cause__ is None
+    assert caught.value.__context__ is None
     assert secret not in str(caught.value)
     assert secret not in repr(caught.value)

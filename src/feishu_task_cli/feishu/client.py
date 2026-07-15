@@ -19,9 +19,17 @@ SECRET_KEYS = frozenset(
         "authorization",
         "client_secret",
         "cookie",
+        "credential",
+        "credentials",
+        "api-key",
+        "api_key",
+        "password",
         "refresh_token",
+        "secret",
         "set-cookie",
+        "token",
         "user_access_token",
+        "x-api-key",
     }
 )
 BEARER_PATTERN = re.compile(r"(?i)\b(Bearer)\s+[A-Za-z0-9._~+/=-]{8,}")
@@ -183,6 +191,7 @@ class FeishuClient:
         request_headers["Authorization"] = f"Bearer {self._access_token}"
 
         response: httpx.Response | None = None
+        transport_failed = False
         for attempt in range(attempts):
             self._emit(
                 {
@@ -194,6 +203,7 @@ class FeishuClient:
                     "params": params,
                 }
             )
+            response = None
             try:
                 response = self._http.request(
                     normalized,
@@ -205,9 +215,8 @@ class FeishuClient:
             except httpx.TransportError:
                 if normalized == "GET" and attempt + 1 < attempts:
                     continue
-                raise FeishuTransportError(
-                    method=normalized, retryable=normalized == "GET"
-                ) from None
+                transport_failed = True
+                break
             if (
                 normalized == "GET"
                 and response.status_code in RETRYABLE_GET_STATUSES
@@ -216,6 +225,8 @@ class FeishuClient:
                 continue
             break
 
+        if transport_failed:
+            raise FeishuTransportError(method=normalized, retryable=normalized == "GET")
         assert response is not None
         payload = self._payload(response)
         safe_payload = redact(payload, secrets=(self._access_token,))

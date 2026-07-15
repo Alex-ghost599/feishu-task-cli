@@ -87,6 +87,8 @@ def test_keyring_backend_error_does_not_expose_token() -> None:
 
     assert secret not in str(caught.value)
     assert secret not in repr(caught.value)
+    assert caught.value.__cause__ is None
+    assert caught.value.__context__ is None
 
 
 def test_keyring_read_and_delete_errors_do_not_expose_backend_content() -> None:
@@ -104,3 +106,5 @@ def test_keyring_read_and_delete_errors_do_not_expose_backend_content() -> None:
 
     assert backend.secret not in repr(read_error.value)
     assert backend.secret not in repr(delete_error.value)
+    assert read_error.value.__context__ is None
+    assert delete_error.value.__context__ is None
