@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import hashlib
 from collections.abc import Mapping
-from typing import Protocol, cast
+from typing import Literal, Protocol, cast
 
 from feishu_task_cli.artifacts.plan import AuthContext
 
@@ -27,7 +27,7 @@ def build_auth_context(
     account = _fingerprint("account-id", account_id)
     actor = _fingerprint("actor-id", actor_id)
     return AuthContext(
-        api_origin=api_origin,
+        api_origin=cast(Literal["https://open.feishu.cn"], api_origin),
         app_id_fingerprint=app,
         tenant_fingerprint=tenant,
         account_fingerprint=account,

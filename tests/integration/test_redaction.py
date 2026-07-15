@@ -17,7 +17,7 @@ def _secret(label: str) -> str:
     return f"synthetic-{label}-" + "z" * 24
 
 
-def test_recursive_redaction_covers_headers_json_text_logs_and_debug_hook(
+def test_telemetry_redaction_preserves_successful_business_response(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     access = _secret("access")
@@ -47,9 +47,13 @@ def test_recursive_redaction_covers_headers_json_text_logs_and_debug_hook(
     with caplog.at_level(logging.DEBUG, logger="feishu_task_cli.feishu.client"):
         response = client.request("GET", "/open-apis/task/v2/tasks/synthetic")
 
-    rendered = repr((response, events, caplog.text, client))
-    assert access not in rendered
-    assert nested not in rendered
+    rendered_telemetry = repr((events, caplog.text, client))
+    assert response == {
+        "refresh_token": nested,
+        "message": f"Authorization: Bearer {nested}",
+    }
+    assert access not in rendered_telemetry
+    assert nested not in rendered_telemetry
     assert events == [
         {"phase": "request", "method": "GET", "attempt": 1},
         {"phase": "response", "method": "GET", "status_code": 200, "request_id": None},

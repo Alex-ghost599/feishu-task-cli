@@ -3,12 +3,14 @@ from __future__ import annotations
 import hashlib
 import re
 from collections.abc import Mapping, Sequence
+from contextlib import suppress
 from dataclasses import dataclass
 from typing import TypeGuard
 
 from feishu_task_cli.artifacts.base import JsonValueNoFloat
 from feishu_task_cli.artifacts.canonical import canonical_bytes
 from feishu_task_cli.artifacts.plan import AssigneeIdentifierType, AssigneeRef
+from feishu_task_cli.artifacts.task_semantics import normalize_task_fields
 from feishu_task_cli.errors import FeishuResponseError
 from feishu_task_cli.feishu.client import FeishuClient
 
@@ -58,6 +60,73 @@ def _mapping(value: object, label: str) -> Mapping[str, object]:
     return value
 
 
+def _is_json_value_no_float(value: object) -> TypeGuard[JsonValueNoFloat]:
+    if value is None or isinstance(value, (str, bool, int)):
+        return True
+    if isinstance(value, list):
+        return all(_is_json_value_no_float(item) for item in value)
+    if isinstance(value, dict):
+        return all(
+            isinstance(key, str) and _is_json_value_no_float(item) for key, item in value.items()
+        )
+    return False
+
+
+def _try_normalize_observed_fields(
+    fields: dict[str, JsonValueNoFloat],
+) -> dict[str, JsonValueNoFloat] | None:
+    if not fields:
+        return {}
+    normalized: dict[str, JsonValueNoFloat] | None = None
+    with suppress(ValueError):
+        normalized = normalize_task_fields("update", fields)
+    return normalized
+
+
+def _observed_fields(task: Mapping[str, object]) -> dict[str, JsonValueNoFloat]:
+    fields: dict[str, JsonValueNoFloat] = {}
+    for name in TASK_FIELDS:
+        if name not in task:
+            continue
+        value = task[name]
+        if not _is_json_value_no_float(value):
+            raise FeishuResponseError("Feishu Task response has an invalid shape")
+        fields[name] = value
+    normalized = _try_normalize_observed_fields(fields)
+    if normalized is None:
+        raise FeishuResponseError("Feishu Task response has an invalid shape")
+    return normalized
+
+
+def _observed_assignees(
+    task: Mapping[str, object],
+    identifier_type: AssigneeIdentifierType,
+) -> tuple[AssigneeRef, ...]:
+    if "members" not in task:
+        return ()
+    members = task["members"]
+    if not isinstance(members, list):
+        raise FeishuResponseError("Feishu Task response has an invalid shape")
+
+    assignees: list[AssigneeRef] = []
+    for member in members:
+        if not isinstance(member, Mapping):
+            raise FeishuResponseError("Feishu Task response has an invalid shape")
+        if member.get("role") != "assignee":
+            continue
+        identifier = member.get("id")
+        if (
+            member.get("type") != "user"
+            or not isinstance(identifier, str)
+            or not identifier
+            or identifier != identifier.strip()
+            or any(character.isspace() for character in identifier)
+        ):
+            raise FeishuResponseError("Feishu Task response has an invalid shape")
+        assignees.append(AssigneeRef(identifier_type=identifier_type, identifier=identifier))
+    return tuple(assignees)
+
+
 class TaskGateway:
     """Narrow Task v2 adapter; raw Feishu shapes do not cross this boundary."""
 
@@ -84,28 +153,9 @@ class TaskGateway:
             raise FeishuResponseError("Feishu Task response contains an unsafe task guid")
         if guid != expected_guid:
             raise FeishuResponseError("Feishu Task response guid does not match requested guid")
-        fields: dict[str, JsonValueNoFloat] = {}
-        for name in TASK_FIELDS:
-            value = task.get(name)
-            if name in task and (value is None or isinstance(value, (str, int, bool, list, dict))):
-                fields[name] = value
-        assignees: list[AssigneeRef] = []
-        members = task.get("members", [])
-        if isinstance(members, list):
-            for member in members:
-                if not isinstance(member, Mapping):
-                    continue
-                identifier = member.get("id")
-                if (
-                    member.get("type") == "user"
-                    and member.get("role") == "assignee"
-                    and isinstance(identifier, str)
-                    and identifier.strip()
-                ):
-                    assignees.append(
-                        AssigneeRef(identifier_type=identifier_type, identifier=identifier)
-                    )
-        return TaskSnapshot(guid=guid, fields=fields, assignees=tuple(assignees))
+        fields = _observed_fields(task)
+        assignees = _observed_assignees(task, identifier_type)
+        return TaskSnapshot(guid=guid, fields=fields, assignees=assignees)
 
     def get(
         self,

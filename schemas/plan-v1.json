@@ -75,7 +75,7 @@
           "type": "string"
         },
         "api_origin": {
-          "pattern": "^https://[A-Za-z0-9.-]+(?::[0-9]+)?$",
+          "const": "https://open.feishu.cn",
           "title": "Api Origin",
           "type": "string"
         },
@@ -333,5 +333,9 @@
     "plan_hash"
   ],
   "title": "PlanV1",
-  "type": "object"
+  "type": "object",
+  "x-runtime-validation-required": [
+    "action-specific target, precondition, field, and assignee invariants",
+    "observed_before SHA-256 binding to precondition_fingerprint"
+  ]
 }

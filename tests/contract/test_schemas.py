@@ -44,6 +44,10 @@ def test_schemas_express_integer_only_business_json_and_safe_origins() -> None:
     assert '"type": "integer"' in serialized
     assert '"type": "number"' not in serialized
     origin = plan_schema["$defs"]["AuthContext"]["properties"]["api_origin"]
-    assert origin["pattern"].startswith("^https://")
+    assert origin["const"] == "https://open.feishu.cn"
+    assert plan_schema["x-runtime-validation-required"] == [
+        "action-specific target, precondition, field, and assignee invariants",
+        "observed_before SHA-256 binding to precondition_fingerprint",
+    ]
     assert "pattern" in plan_schema["properties"]["created_at"]
     assert "pattern" in plan_schema["properties"]["expires_at"]

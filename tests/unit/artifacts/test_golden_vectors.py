@@ -23,6 +23,8 @@ def test_canonical_hash_golden_vectors() -> None:
 def test_complete_artifact_golden_vectors() -> None:
     vectors = json.loads(ARTIFACT_VECTORS.read_text(encoding="utf-8"))
 
+    assert any(vector["input"]["action"] != "create" for vector in vectors)
+
     for vector in vectors:
         assert vector["artifact_type"] == "plan"
         artifact = PlanV1.build(**vector["input"])

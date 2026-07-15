@@ -264,7 +264,6 @@ class FeishuClient:
 
         assert response is not None
         payload = self._payload(response)
-        safe_payload = redact(payload, secrets=(self._access_token,))
         forbidden = {self._access_token}
         forbidden.update(_string_values(json))
         forbidden.update(_string_values(params))
@@ -287,11 +286,7 @@ class FeishuClient:
                 request_id=request_id,
                 retryable=normalized == "GET" and response.status_code in RETRYABLE_GET_STATUSES,
             )
-        data = (
-            safe_payload["data"]
-            if isinstance(safe_payload, Mapping) and "data" in safe_payload
-            else safe_payload
-        )
+        data = payload["data"] if isinstance(payload, Mapping) and "data" in payload else payload
         return FeishuResponse(data=data, request_id=request_id)
 
     def request(

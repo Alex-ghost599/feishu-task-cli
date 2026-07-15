@@ -69,6 +69,74 @@ def test_task_snapshot_fingerprint_binds_guid() -> None:
     assert first.to_state()["guid"] == "task_first"
 
 
+def test_task_get_preserves_credential_shaped_business_text_in_fingerprint() -> None:
+    summaries = iter(("Bearer abcdefgh123", "Bearer zyxwvuts987"))
+
+    def transport(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "code": 0,
+                "data": {
+                    "task": {
+                        "guid": "task_synthetic",
+                        "summary": next(summaries),
+                    }
+                },
+            },
+        )
+
+    gateway = TaskGateway(
+        FeishuClient(
+            api_origin="https://open.feishu.cn",
+            access_token="synthetic-access-token-value",
+            http_client=httpx.Client(transport=httpx.MockTransport(transport)),
+        )
+    )
+
+    first = gateway.get("task_synthetic")
+    second = gateway.get("task_synthetic")
+
+    assert first.fields["summary"] == "Bearer abcdefgh123"
+    assert second.fields["summary"] == "Bearer zyxwvuts987"
+    assert first.fingerprint() != second.fingerprint()
+
+
+@pytest.mark.parametrize(
+    "task_fragment",
+    [
+        {"summary": 123},
+        {"due": {"timestamp": "123"}},
+        {"members": "not-a-list"},
+        {"members": ["not-a-mapping"]},
+        {"members": [{"type": "user", "role": "assignee", "id": "ou invalid"}]},
+    ],
+)
+def test_task_get_rejects_malformed_declared_state(
+    task_fragment: dict[str, object],
+) -> None:
+    client = FeishuClient(
+        api_origin="https://open.feishu.cn",
+        access_token="synthetic-access-token-value",
+        http_client=httpx.Client(
+            transport=httpx.MockTransport(
+                lambda request: httpx.Response(
+                    200,
+                    json={
+                        "code": 0,
+                        "data": {
+                            "task": {"guid": "task_synthetic", **task_fragment},
+                        },
+                    },
+                )
+            )
+        ),
+    )
+
+    with pytest.raises(FeishuResponseError, match="invalid shape"):
+        TaskGateway(client).get("task_synthetic")
+
+
 @pytest.mark.parametrize(
     "task_guid",
     ["../tasks/other", "task?x=1", "task/child", "", "x" * 101],
