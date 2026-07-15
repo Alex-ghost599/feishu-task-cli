@@ -8,6 +8,11 @@ def test_detects_real_personal_home_path() -> None:
     assert findings == ["fixture: personal_home_path"]
 
 
+def test_detects_example_subdirectory_under_real_home() -> None:
+    findings = scan_text("path=/" + "Users/alice/example/private.txt", "fixture")
+    assert findings == ["fixture: personal_home_path"]
+
+
 def test_allows_synthetic_feishu_identifier() -> None:
     assert scan_text("open_id=ou_test_example", "fixture") == []
 
