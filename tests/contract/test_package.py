@@ -4,8 +4,8 @@ from feishu_task_cli import __version__
 from feishu_task_cli.cli import app
 
 
-def test_public_version_is_v0_1_1() -> None:
-    assert __version__ == "0.1.1"
+def test_public_version_is_v0_1_2() -> None:
+    assert __version__ == "0.1.2"
 
 
 def test_cli_help_labels_agent_native_release() -> None:
