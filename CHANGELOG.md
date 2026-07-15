@@ -2,6 +2,20 @@
 
 All notable changes to this project are documented here.
 
+## [0.1.1] - 2026-07-15
+
+### Fixed
+
+- Fetch the exact remote tag object, then require the checked-out `HEAD`, event `GITHUB_SHA`,
+  peeled annotated tag commit, and current `origin/main` to match exactly.
+
+### Release note
+
+- The immutable `v0.1.0` tag workflow failed before the build step because the runner did not
+  have the annotated tag ref; it created no GitHub Release or release assets. Failed release
+  tags are never moved, deleted, or reused.
+- `v0.1.1` is the first complete release candidate.
+
 ## [0.1.0] - 2026-07-15
 
 ### Added
@@ -20,4 +34,5 @@ All notable changes to this project are documented here.
 - Mutations fail closed on stale state, AuthContext mismatch, replay, concurrent execution, and
   invalid or expired review artifacts.
 
+[0.1.1]: https://github.com/Alex-ghost599/feishu-task-cli/releases/tag/v0.1.1
 [0.1.0]: https://github.com/Alex-ghost599/feishu-task-cli/releases/tag/v0.1.0

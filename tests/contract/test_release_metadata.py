@@ -9,7 +9,7 @@ import yaml
 from feishu_task_cli import __version__
 
 ROOT = Path(__file__).resolve().parents[2]
-RELEASE_VERSION = "0.1.0"
+RELEASE_VERSION = "0.1.1"
 
 
 def test_release_version_is_consistent_across_public_metadata() -> None:
@@ -20,6 +20,9 @@ def test_release_version_is_consistent_across_public_metadata() -> None:
     assert "Development Status :: 3 - Alpha" in project["classifiers"]
     assert __version__ == RELEASE_VERSION
     assert f"## [{RELEASE_VERSION}]" in changelog
+    assert "v0.1.0` tag workflow failed before the build step" in changelog
+    assert "created no GitHub Release or release assets" in changelog
+    assert "`v0.1.1` is the first complete release candidate" in changelog
 
 
 def _release_workflow() -> dict[str, object]:
@@ -132,21 +135,40 @@ def test_release_artifact_has_one_validated_producer_and_no_pypi_rebuild() -> No
 
 
 def test_release_tag_and_version_checks_are_executable_steps() -> None:
-    release_text = "\n".join(
-        step.get("run", "") for step in _steps(_job(_release_workflow(), "release"))
+    release_steps = _steps(_job(_release_workflow(), "release"))
+    release_text = "\n".join(step.get("run", "") for step in release_steps)
+    verifier = (ROOT / "scripts/verify_release_tag.sh").read_text(encoding="utf-8")
+
+    verify_index = next(
+        i
+        for i, step in enumerate(release_steps)
+        if step.get("run", "").strip() == "bash scripts/verify_release_tag.sh"
+    )
+    setup_uv_index = next(
+        i for i, step in enumerate(release_steps) if "setup-uv@" in step.get("uses", "")
     )
 
-    assert "git cat-file -t" in release_text
-    assert "git rev-list -n 1" in release_text
-    assert "origin/main" in release_text
+    assert verify_index < setup_uv_index
+    assert "git cat-file -t" in verifier
+    assert "GITHUB_SHA" in verifier
+    assert "HEAD^{commit}" in verifier
+    assert "${tag_ref}^{commit}" in verifier
+    assert "refs/remotes/origin/main" in verifier
     assert "tomllib" in release_text
 
 
 def test_readme_install_does_not_assume_pypi_publishing() -> None:
     readme = (ROOT / "README.md").read_text(encoding="utf-8")
 
-    assert "git+https://github.com/Alex-ghost599/feishu-task-cli@v0.1.0" in readme
+    assert f"git+https://github.com/Alex-ghost599/feishu-task-cli@v{RELEASE_VERSION}" in readme
     assert "`uv tool install feishu-task-cli`" not in readme
+
+
+def test_release_process_forbids_reusing_failed_tags() -> None:
+    process = (ROOT / "docs/release-process.md").read_text(encoding="utf-8")
+
+    assert "Never move, delete, or reuse a failed release tag" in process
+    assert "use the next patch" in process
 
 
 def test_release_workflow_pins_every_action_to_an_immutable_sha() -> None:
