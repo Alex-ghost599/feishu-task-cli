@@ -10,6 +10,8 @@ from pathlib import Path
 
 Pattern = tuple[str, re.Pattern[str]]
 
+LEGACY_PUBLISHED_IDENTITY_EXCEPTIONS = frozenset({"40005c84301d277b105735e72e7633c90b966e46"})
+
 
 def _assignment(field: str, value: str) -> re.Pattern[str]:
     return re.compile(rf"(?i)[\"']?{field}[\"']?\s*[:=]\s*[\"']?{value}")
@@ -100,6 +102,41 @@ def scan_history(root: Path) -> list[str]:
     return scan_text(history, "git-history")
 
 
+def _is_github_noreply(email: str) -> bool:
+    return email == "noreply@github.com" or email.endswith("@users.noreply.github.com")
+
+
+def scan_identity_log(text: str) -> list[str]:
+    """Return redacted findings for publishable commit author/committer identities."""
+    findings: list[str] = []
+    for line in text.splitlines():
+        fields = line.split("\t")
+        if len(fields) != 3:
+            findings.append("git-head-identities: malformed_identity_record")
+            continue
+        commit_sha, author_email, committer_email = fields
+        if commit_sha in LEGACY_PUBLISHED_IDENTITY_EXCEPTIONS:
+            continue
+        if not _is_github_noreply(author_email):
+            findings.append("git-head-identities: non_noreply_author")
+        if not _is_github_noreply(committer_email):
+            findings.append("git-head-identities: non_noreply_committer")
+    return sorted(set(findings))
+
+
+def scan_head_identities(root: Path) -> list[str]:
+    """Scan only commits reachable from publishable HEAD, not retained remote task refs."""
+    identity_log = subprocess.run(
+        ["git", "log", "HEAD", "--format=%H%x09%ae%x09%ce"],
+        cwd=root,
+        check=True,
+        capture_output=True,
+        text=True,
+        errors="ignore",
+    ).stdout
+    return scan_identity_log(identity_log)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--history", action="store_true")
@@ -112,6 +149,7 @@ def main() -> int:
     findings = scan_tree(root)
     if args.history:
         findings.extend(scan_history(root))
+        findings.extend(scan_head_identities(root))
     if findings:
         print("Privacy scan failed:")
         for finding in sorted(set(findings)):

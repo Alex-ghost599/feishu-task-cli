@@ -13,6 +13,7 @@ import yaml
 from pydantic import SecretStr
 
 DEFAULT_API_ORIGIN = "https://open.feishu.cn"
+DEFAULT_OAUTH_REDIRECT_URI = "http://127.0.0.1:8765/callback"
 
 
 class ConfigError(ValueError):
@@ -138,11 +139,49 @@ def validate_api_origin(value: object) -> str:
     return _origin(value)
 
 
+def _oauth_redirect_uri(value: object) -> str:
+    message = (
+        "FEISHU_OAUTH_REDIRECT_URI must be canonical http://127.0.0.1:PORT/callback "
+        "or http://[::1]:PORT/callback with a non-zero explicit port"
+    )
+    if not isinstance(value, str):
+        raise ConfigError(message)
+    parse_failed = False
+    parsed = None
+    hostname = None
+    port = None
+    try:
+        parsed = urlsplit(value)
+        hostname = parsed.hostname
+        port = parsed.port
+    except ValueError:
+        parse_failed = True
+    if parse_failed or parsed is None:
+        raise ConfigError(message)
+    canonical_host = "127.0.0.1" if hostname == "127.0.0.1" else "[::1]"
+    expected = f"http://{canonical_host}:{port}/callback"
+    if (
+        parsed.scheme != "http"
+        or hostname not in {"127.0.0.1", "::1"}
+        or parsed.username is not None
+        or parsed.password is not None
+        or port is None
+        or port == 0
+        or parsed.path != "/callback"
+        or parsed.query
+        or parsed.fragment
+        or value != expected
+    ):
+        raise ConfigError(message)
+    return value
+
+
 @dataclass(frozen=True)
 class Settings:
     """Authentication settings with secret values represented by redacting wrappers."""
 
     api_origin: str = DEFAULT_API_ORIGIN
+    oauth_redirect_uri: str = DEFAULT_OAUTH_REDIRECT_URI
     app_id: str | None = None
     tenant_id: str | None = None
     account_id: str | None = None
@@ -151,6 +190,11 @@ class Settings:
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "api_origin", _origin(self.api_origin))
+        object.__setattr__(
+            self,
+            "oauth_redirect_uri",
+            _oauth_redirect_uri(self.oauth_redirect_uri),
+        )
         for field_name in ("app_id", "tenant_id", "account_id"):
             value = getattr(self, field_name)
             if value is not None:
@@ -185,6 +229,10 @@ class Settings:
         )
         return cls(
             api_origin=_origin(selected("FEISHU_API_ORIGIN", "api_origin") or DEFAULT_API_ORIGIN),
+            oauth_redirect_uri=_oauth_redirect_uri(
+                selected("FEISHU_OAUTH_REDIRECT_URI", "oauth_redirect_uri")
+                or DEFAULT_OAUTH_REDIRECT_URI
+            ),
             app_id=_optional_text(selected("FEISHU_APP_ID", "app_id"), field="app_id"),
             tenant_id=_optional_text(selected("FEISHU_TENANT_ID", "tenant_id"), field="tenant_id"),
             account_id=_optional_text(

@@ -76,6 +76,45 @@ def test_invalid_environment_value_does_not_appear_in_validation_error() -> None
     _assert_no_exception_chain(caught.value)
 
 
+def test_oauth_redirect_uri_loads_from_explicit_environment_and_config(tmp_path: Path) -> None:
+    path = tmp_path / "auth.yaml"
+    path.write_text("oauth_redirect_uri: http://127.0.0.1:18765/callback\n")
+    path.chmod(0o600)
+
+    configured = Settings.load(config_path=path, environ={})
+    overridden = Settings.load(
+        config_path=path,
+        environ={"FEISHU_OAUTH_REDIRECT_URI": "http://[::1]:18766/callback"},
+    )
+
+    assert configured.oauth_redirect_uri == "http://127.0.0.1:18765/callback"
+    assert overridden.oauth_redirect_uri == "http://[::1]:18766/callback"
+
+
+@pytest.mark.parametrize(
+    "redirect_uri",
+    [
+        "https://127.0.0.1:18765/callback",
+        "http://localhost:18765/callback",
+        "http://127.0.0.2:18765/callback",
+        "http://127.0.0.1/callback",
+        "http://127.0.0.1:0/callback",
+        "http://127.0.0.1:18765/other",
+        "http://user@127.0.0.1:18765/callback",
+        "http://127.0.0.1:18765/callback?code=synthetic",
+        "http://127.0.0.1:18765/callback#fragment",
+        "http://[::1]/callback",
+        "http://[::2]:18765/callback",
+        "http://[::1]:99999/callback",
+    ],
+)
+def test_oauth_redirect_uri_rejects_noncanonical_or_unsafe_values(redirect_uri: str) -> None:
+    with pytest.raises(ConfigError, match="FEISHU_OAUTH_REDIRECT_URI") as caught:
+        Settings(oauth_redirect_uri=redirect_uri)
+
+    _assert_no_exception_chain(caught.value)
+
+
 def test_secret_config_must_be_a_regular_file(tmp_path: Path) -> None:
     target = tmp_path / "target.json"
     target.write_text("{}")

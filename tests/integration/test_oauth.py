@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import socket
 import threading
 import urllib.error
 import urllib.parse
@@ -37,12 +38,14 @@ def _settings(
     *,
     headless_token: str | None = None,
     app_secret: str | None = "synthetic-app-secret",
+    oauth_redirect_uri: str = "http://127.0.0.1:18765/callback",
 ) -> Settings:
     return Settings(
         app_id="cli_synthetic",
         account_id="account_synthetic",
         app_secret=None if app_secret is None else SecretStr(app_secret),
         user_access_token=None if headless_token is None else SecretStr(headless_token),
+        oauth_redirect_uri=oauth_redirect_uri,
     )
 
 
@@ -68,6 +71,7 @@ def test_explicit_localhost_callback_exchanges_code_and_stores_tokens() -> None:
             body = json.loads(request.content)
             assert body["code"] == "synthetic-code"
             assert body["client_secret"] == "synthetic-app-secret"
+            assert body["redirect_uri"] == "http://127.0.0.1:18765/callback"
             return httpx.Response(200, json=json.loads(TOKEN_FIXTURE.read_text()))
         assert request.url.path == "/open-apis/authen/v1/user_info"
         assert request.headers["Authorization"] == "Bearer synthetic-access"
@@ -110,12 +114,128 @@ def test_explicit_localhost_callback_exchanges_code_and_stores_tokens() -> None:
     assert store.get_refresh_token() == "synthetic-refresh"
 
 
+def test_authorization_and_exchange_use_exact_configured_ipv6_redirect_uri() -> None:
+    client = OAuthClient(
+        settings=_settings(oauth_redirect_uri="http://[::1]:18766/callback"),
+        store=_store(),
+    )
+
+    query = urllib.parse.parse_qs(
+        urllib.parse.urlsplit(
+            client.authorization_url(
+                redirect_uri="http://[::1]:18766/callback",
+                state="synthetic-state",
+                scopes=("task:task:write",),
+            )
+        ).query
+    )
+
+    assert query["redirect_uri"] == ["http://[::1]:18766/callback"]
+
+
+def test_redirect_mismatch_fails_before_browser_network_or_token_side_effects() -> None:
+    browser_calls = 0
+    http_calls = 0
+
+    def browser_open(url: str) -> bool:
+        nonlocal browser_calls
+        browser_calls += 1
+        return True
+
+    def transport(request: httpx.Request) -> httpx.Response:
+        nonlocal http_calls
+        http_calls += 1
+        return httpx.Response(500)
+
+    client = OAuthClient(
+        settings=_settings(),
+        store=_store(),
+        http_client=httpx.Client(transport=httpx.MockTransport(transport)),
+        browser_open=browser_open,
+    )
+
+    with pytest.raises(OAuthError, match="configured OAuth redirect URI"):
+        client.authorization_url(
+            redirect_uri="http://127.0.0.1:18767/callback",
+            state="synthetic-state",
+            scopes=("task:task:write",),
+        )
+    with pytest.raises(OAuthError, match="configured OAuth redirect URI"):
+        client.exchange_code(
+            code="synthetic-code",
+            redirect_uri="http://127.0.0.1:18767/callback",
+        )
+
+    assert browser_calls == 0
+    assert http_calls == 0
+
+
+def test_callback_bind_failure_is_typed_before_browser_or_network() -> None:
+    browser_calls = 0
+    http_calls = 0
+    occupied = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    occupied.bind(("127.0.0.1", 0))
+    occupied.listen()
+    port = occupied.getsockname()[1]
+
+    def browser_open(url: str) -> bool:
+        nonlocal browser_calls
+        browser_calls += 1
+        return True
+
+    def transport(request: httpx.Request) -> httpx.Response:
+        nonlocal http_calls
+        http_calls += 1
+        return httpx.Response(500)
+
+    try:
+        client = OAuthClient(
+            settings=_settings(oauth_redirect_uri=f"http://127.0.0.1:{port}/callback"),
+            store=_store(),
+            http_client=httpx.Client(transport=httpx.MockTransport(transport)),
+            browser_open=browser_open,
+        )
+        with pytest.raises(OAuthError, match="callback listener could not bind") as caught:
+            client.login(timeout=0.01, scopes=("task:task:write",))
+    finally:
+        occupied.close()
+
+    assert caught.value.__cause__ is None
+    assert caught.value.__context__ is None
+    assert browser_calls == 0
+    assert http_calls == 0
+
+
+def test_no_browser_login_emits_url_without_opening_browser() -> None:
+    emitted: list[str] = []
+    browser_calls = 0
+
+    def browser_open(url: str) -> bool:
+        nonlocal browser_calls
+        browser_calls += 1
+        return True
+
+    client = OAuthClient(
+        settings=_settings(oauth_redirect_uri="http://127.0.0.1:18767/callback"),
+        store=_store(),
+        browser_open=browser_open,
+        authorization_url_output=emitted.append,
+    )
+
+    with pytest.raises(OAuthError, match="timeout"):
+        client.login(timeout=0.01, scopes=("task:task:write",), open_browser=False)
+
+    assert browser_calls == 0
+    assert len(emitted) == 1
+    assert "redirect_uri=http%3A%2F%2F127.0.0.1%3A18767%2Fcallback" in emitted[0]
+
+
 def test_authorization_url_matches_current_official_contract() -> None:
     client = OAuthClient(settings=_settings(), store=_store())
 
     url = urllib.parse.urlsplit(
         client.authorization_url(
-            redirect_uri="http://127.0.0.1:12345/callback",
+            redirect_uri="http://127.0.0.1:18765/callback",
             state="synthetic-state",
             scopes=("task:task:write", "offline_access", "task:task:write"),
         )
@@ -141,7 +261,7 @@ def test_authorization_url_rejects_missing_or_unallowlisted_task_scopes(
 
     with pytest.raises(ValueError, match="scope"):
         client.authorization_url(
-            redirect_uri="http://127.0.0.1:12345/callback",
+            redirect_uri="http://127.0.0.1:18765/callback",
             state="synthetic-state",
             scopes=scopes,
         )
@@ -168,7 +288,7 @@ def test_token_success_requires_explicit_integer_zero_code(invalid_code: object)
         http_client=httpx.Client(transport=httpx.MockTransport(transport)),
     )
     with pytest.raises(OAuthError, match="rejected"):
-        client.exchange_code(code="synthetic-code", redirect_uri="http://127.0.0.1/callback")
+        client.exchange_code(code="synthetic-code", redirect_uri="http://127.0.0.1:18765/callback")
     assert calls == 1
     assert store.get_access_token() is None
 
@@ -199,7 +319,7 @@ def test_interactive_oauth_requires_app_secret_before_side_effects(
         browser_open=browser_open,
     )
     with pytest.raises(OAuthError, match="app secret"):
-        client.exchange_code(code="synthetic-code", redirect_uri="http://127.0.0.1/callback")
+        client.exchange_code(code="synthetic-code", redirect_uri="http://127.0.0.1:18765/callback")
     with pytest.raises(OAuthError, match="app secret"):
         client.refresh()
     with pytest.raises(OAuthError, match="app secret"):
@@ -374,7 +494,7 @@ def test_exchange_verifies_owner_before_token_commit() -> None:
         http_client=httpx.Client(transport=httpx.MockTransport(transport)),
     )
     with pytest.raises(OAuthError, match="account identity did not match") as caught:
-        client.exchange_code(code="synthetic-code", redirect_uri="http://127.0.0.1/callback")
+        client.exchange_code(code="synthetic-code", redirect_uri="http://127.0.0.1:18765/callback")
     assert store.get_access_token() is None
     assert store.get_refresh_token() is None
     assert body_secret not in repr(caught.value)
@@ -446,7 +566,7 @@ def test_oauth_json_errors_have_no_exception_chain() -> None:
         http_client=httpx.Client(transport=httpx.MockTransport(transport)),
     )
     with pytest.raises(OAuthError) as caught:
-        client.exchange_code(code="synthetic-code", redirect_uri="http://127.0.0.1/callback")
+        client.exchange_code(code="synthetic-code", redirect_uri="http://127.0.0.1:18765/callback")
     assert caught.value.__cause__ is None
     assert caught.value.__context__ is None
     assert secret not in repr(caught.value)
@@ -464,7 +584,7 @@ def test_exchange_transport_error_has_no_request_context() -> None:
         http_client=httpx.Client(transport=httpx.MockTransport(transport)),
     )
     with pytest.raises(OAuthError) as caught:
-        client.exchange_code(code="synthetic-code", redirect_uri="http://127.0.0.1/callback")
+        client.exchange_code(code="synthetic-code", redirect_uri="http://127.0.0.1:18765/callback")
     assert caught.value.__cause__ is None
     assert caught.value.__context__ is None
     assert secret not in repr(caught.value)

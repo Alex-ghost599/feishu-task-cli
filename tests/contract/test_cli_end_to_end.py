@@ -42,12 +42,14 @@ AUTH = AuthContext(
 @dataclass
 class FakeOAuth:
     logged_out: bool = False
+    open_browser: bool | None = None
 
     def status(self) -> AuthStatus:
         return AuthStatus(authenticated=True, auth_context=AUTH)
 
-    def login(self, *, scopes: tuple[str, ...]) -> None:
+    def login(self, *, scopes: tuple[str, ...], open_browser: bool = True) -> None:
         assert scopes == ("task:task:read", "task:task:write")
+        self.open_browser = open_browser
 
     def logout(self) -> None:
         self.logged_out = True
@@ -429,6 +431,12 @@ def test_remaining_plan_and_explicit_human_auth_login_are_machine_readable(
     login = runner.invoke(cli.app, ["auth", "login"])
     assert login.exit_code == 0, login.output
     assert json.loads(login.stdout)["authenticated"] is True
+    assert runtime.oauth.open_browser is True
+
+    no_browser_login = runner.invoke(cli.app, ["auth", "login", "--no-browser"])
+    assert no_browser_login.exit_code == 0, no_browser_login.output
+    assert json.loads(no_browser_login.stdout)["authenticated"] is True
+    assert runtime.oauth.open_browser is False
 
     update = runner.invoke(
         cli.app,

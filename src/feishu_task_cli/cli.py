@@ -122,7 +122,7 @@ class AgentTyperGroup(TyperGroup):
 
 app = typer.Typer(
     cls=AgentTyperGroup,
-    help="Agent-native Feishu Task CLI (pre-alpha) with review-gated writes.",
+    help="Agent-native Feishu Task CLI with review-gated writes.",
 )
 auth_app = typer.Typer(help="Explicit OAuth setup and status.")
 task_app = typer.Typer(help="Read Feishu Tasks.")
@@ -137,7 +137,7 @@ app.add_typer(schema_app, name="schema")
 
 
 class OAuthRuntime(Protocol):
-    def login(self, *, scopes: tuple[str, ...]) -> None: ...
+    def login(self, *, scopes: tuple[str, ...], open_browser: bool = True) -> None: ...
 
     def status(self) -> AuthStatus: ...
 
@@ -224,7 +224,13 @@ def runtime_factory(
     store = TokenStore(app_id=settings.app_id, account_id=settings.account_id)
     return Runtime(
         settings=settings,
-        oauth=OAuthClient(settings=settings, store=store),
+        oauth=OAuthClient(
+            settings=settings,
+            store=store,
+            authorization_url_output=lambda url: typer.echo(
+                f"Open this explicit OAuth authorization URL: {url}", err=True
+            ),
+        ),
         journal_path=Path(journal_path) if journal_path is not None else None,
     )
 
@@ -581,11 +587,15 @@ def _mapping_input(source: str | None) -> dict[str, JsonValueNoFloat]:
 @auth_app.command("login")
 def auth_login(
     config: Annotated[str | None, typer.Option("--config")] = None,
+    open_browser: Annotated[bool, typer.Option("--browser/--no-browser")] = True,
 ) -> None:
     """Run the one explicit human OAuth setup command."""
     try:
         runtime = _runtime(config)
-        runtime.oauth.login(scopes=("task:task:read", "task:task:write"))
+        runtime.oauth.login(
+            scopes=("task:task:read", "task:task:write"),
+            open_browser=open_browser,
+        )
         status = runtime.oauth.status()
         _emit_value(
             {
