@@ -10,6 +10,18 @@ class PolicyRejectedError(FeishuTaskError, ValueError):
     """Raised when an execution review does not satisfy the selected policy."""
 
 
+class AuthContextMismatchError(FeishuTaskError):
+    """Raised before mutation when the live identity differs from the Plan."""
+
+
+class PreconditionChangedError(FeishuTaskError):
+    """Raised before mutation when the observed Task changed after planning."""
+
+
+class FeishuResponseError(FeishuTaskError):
+    """Raised when a successful HTTP response cannot satisfy the Task contract."""
+
+
 class ExecutionInProgressError(FeishuTaskError):
     """Raised when another local process holds the Plan execution lock."""
 

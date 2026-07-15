@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import re
 from collections.abc import Callable, Mapping
+from dataclasses import dataclass
 from typing import TypeAlias, cast
 
 import httpx
@@ -40,6 +41,12 @@ ASSIGNMENT_PATTERN = re.compile(
 SAFE_REQUEST_ID = re.compile(r"^[A-Za-z0-9._:-]{1,128}$")
 
 JsonLike: TypeAlias = None | bool | int | float | str | list["JsonLike"] | dict[str, "JsonLike"]
+
+
+@dataclass(frozen=True)
+class FeishuResponse:
+    data: object
+    request_id: str | None
 
 
 def _redact_text(value: str, secrets: tuple[str, ...] = ()) -> str:
@@ -173,7 +180,7 @@ class FeishuClient:
         except ValueError:
             return response.text
 
-    def request(
+    def request_with_metadata(
         self,
         method: str,
         path: str,
@@ -181,7 +188,7 @@ class FeishuClient:
         json: object | None = None,
         params: Mapping[str, str | int | float | bool | None] | None = None,
         headers: Mapping[str, str] | None = None,
-    ) -> object:
+    ) -> FeishuResponse:
         """Send one request, retrying only bounded idempotent GET operations."""
         normalized = method.upper()
         if not path.startswith("/") or path.startswith("//"):
@@ -250,6 +257,26 @@ class FeishuClient:
                 request_id=request_id,
                 retryable=normalized == "GET" and response.status_code in RETRYABLE_GET_STATUSES,
             )
-        if isinstance(safe_payload, Mapping) and "data" in safe_payload:
-            return safe_payload["data"]
-        return safe_payload
+        data = (
+            safe_payload["data"]
+            if isinstance(safe_payload, Mapping) and "data" in safe_payload
+            else safe_payload
+        )
+        return FeishuResponse(data=data, request_id=request_id)
+
+    def request(
+        self,
+        method: str,
+        path: str,
+        *,
+        json: object | None = None,
+        params: Mapping[str, str | int | float | bool | None] | None = None,
+        headers: Mapping[str, str] | None = None,
+    ) -> object:
+        return self.request_with_metadata(
+            method,
+            path,
+            json=json,
+            params=params,
+            headers=headers,
+        ).data
