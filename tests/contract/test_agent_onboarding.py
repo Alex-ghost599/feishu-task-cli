@@ -530,6 +530,7 @@ def test_readme_synthetic_handoff_uses_the_declared_review_relationship() -> Non
     readme = _read("README.md")
 
     _assert_safe_example_handoff(readme)
+    assert re.search(r"release\s*(?:>\s*)?candidate", readme, flags=re.IGNORECASE) is None
 
 
 def test_readme_has_the_six_reviewed_discovery_headings_and_five_factual_badges() -> None:

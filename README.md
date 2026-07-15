@@ -11,9 +11,8 @@ results. JSON artifacts are the stable Agent contract; the Markdown renderer tur
 into a concise handoff for a user.
 
 > **Safety boundary:** A Plan is not an executed Task. Only a Receipt records an execution
-> outcome, and only `verified` means required fields matched API readback. This v0.1.2 release
-> candidate was validated with synthetic mocked responses and has **no live-tenant validation**
-> claim.
+> outcome, and only `verified` means required fields matched API readback. Validation for v0.1.2
+> uses synthetic mocked responses and makes **no live-tenant validation** claim.
 
 ## Why this exists
 
