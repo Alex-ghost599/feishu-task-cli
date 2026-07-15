@@ -75,6 +75,123 @@ def test_create_plan_binds_auth_without_remote_precondition() -> None:
     assert gateway.get_calls == []
 
 
+@pytest.mark.parametrize("requested_fields", [{}, {"summary": ""}, {"summary": "   "}])
+def test_create_requires_non_empty_summary_before_network(
+    requested_fields: dict[str, object],
+) -> None:
+    gateway = StubGateway(TaskSnapshot(guid="unused", fields={}))
+    planner = Planner(gateway, AUTH, now=lambda: NOW)
+
+    with pytest.raises(ValueError, match="summary"):
+        planner.create(
+            requested_fields=requested_fields,
+            tasklist_guid="tasklist_synthetic",
+        )
+    assert gateway.get_calls == []
+
+
+def test_update_requires_at_least_one_field_before_network() -> None:
+    gateway = StubGateway(TaskSnapshot(guid="task_synthetic", fields={}))
+    planner = Planner(gateway, AUTH, now=lambda: NOW)
+
+    with pytest.raises(ValueError, match="at least one"):
+        planner.update("task_synthetic", {})
+    assert gateway.get_calls == []
+
+
+def test_planner_normalizes_task_timestamps_and_due() -> None:
+    gateway = StubGateway(TaskSnapshot(guid="unused", fields={}))
+    planner = Planner(gateway, AUTH, now=lambda: NOW)
+
+    plan = planner.create(
+        requested_fields={
+            "summary": "Synthetic task",
+            "completed_at": 1735787045000,
+            "due": {"timestamp": 1735873445000, "is_all_day": False},
+        },
+        tasklist_guid="tasklist_synthetic",
+    )
+
+    assert plan.requested_fields["completed_at"] == "1735787045000"
+    assert plan.requested_fields["due"] == {
+        "timestamp": "1735873445000",
+        "is_all_day": False,
+    }
+
+
+@pytest.mark.parametrize(
+    "requested_fields",
+    [
+        {"summary": 7},
+        {"summary": "x" * 3001},
+        {"summary": "Synthetic task", "description": "x" * 3001},
+        {"summary": "Synthetic task", "completed_at": -1},
+        {"summary": "Synthetic task", "completed_at": "not-a-timestamp"},
+        {"summary": "Synthetic task", "due": {"timestamp": "1"}},
+        {
+            "summary": "Synthetic task",
+            "due": {"timestamp": "1", "is_all_day": "false"},
+        },
+    ],
+)
+def test_planner_rejects_invalid_task_field_values(
+    requested_fields: dict[str, object],
+) -> None:
+    gateway = StubGateway(TaskSnapshot(guid="unused", fields={}))
+    planner = Planner(gateway, AUTH, now=lambda: NOW)
+
+    with pytest.raises(ValueError):
+        planner.create(
+            requested_fields=requested_fields,
+            tasklist_guid="tasklist_synthetic",
+        )
+    assert gateway.get_calls == []
+
+
+@pytest.mark.parametrize(
+    "requested_fields",
+    [
+        {"completed_at": "١٢٣"},
+        {"completed_at": "²"},
+        {"due": {"timestamp": "١٢٣", "is_all_day": False}},
+    ],
+)
+def test_update_rejects_non_ascii_timestamps_before_network(
+    requested_fields: dict[str, object],
+) -> None:
+    gateway = StubGateway(TaskSnapshot(guid="task_synthetic", fields={}))
+    planner = Planner(gateway, AUTH, now=lambda: NOW)
+
+    with pytest.raises(ValueError, match="timestamp"):
+        planner.update("task_synthetic", requested_fields)
+    assert gateway.get_calls == []
+
+
+def test_assignees_are_trimmed_deduplicated_and_limited() -> None:
+    gateway = StubGateway(TaskSnapshot(guid="unused", fields={}))
+    planner = Planner(gateway, AUTH, now=lambda: NOW)
+
+    plan = planner.create(
+        requested_fields={"summary": "Synthetic task"},
+        tasklist_guid="tasklist_synthetic",
+        assignees=("open_id:  ou_synthetic  ", "open_id:ou_synthetic"),
+    )
+
+    assert [item.identifier for item in plan.assignees] == ["ou_synthetic"]
+
+    with pytest.raises(ValueError, match="at most 50"):
+        planner.create(
+            requested_fields={"summary": "Synthetic task"},
+            tasklist_guid="tasklist_synthetic",
+            assignees=tuple(f"open_id:ou_{index}" for index in range(51)),
+        )
+
+
+def test_assignee_rejects_identifier_with_internal_whitespace() -> None:
+    with pytest.raises(ValueError, match="whitespace"):
+        parse_assignee("open_id:ou synthetic")
+
+
 def test_planner_rejects_fields_outside_v01_task_scope() -> None:
     gateway = StubGateway(TaskSnapshot(guid="unused", fields={}))
     planner = Planner(gateway, AUTH, now=lambda: NOW)

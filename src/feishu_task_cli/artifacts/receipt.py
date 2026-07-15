@@ -15,6 +15,7 @@ from feishu_task_cli.artifacts.base import (
 )
 from feishu_task_cli.artifacts.canonical import artifact_hash
 from feishu_task_cli.artifacts.plan import Action, ArtifactHash, AuthContext, Fingerprint
+from feishu_task_cli.artifacts.state import state_differences
 from feishu_task_cli.errors import ArtifactIntegrityError
 
 
@@ -69,9 +70,8 @@ class ReceiptContentV1(ArtifactV1):
         if self.outcome is Outcome.VERIFIED:
             if self.mismatches or self.omitted_fields:
                 raise ValueError("verified receipt cannot contain mismatches or omitted fields")
-            if any(
-                self.observed_state.get(key) != value for key, value in self.requested_state.items()
-            ):
+            mismatches, omitted = state_differences(self.requested_state, self.observed_state)
+            if mismatches or omitted:
                 raise ValueError("verified receipt requested state must match observed state")
         if self.outcome is Outcome.PARTIAL and not (self.mismatches or self.omitted_fields):
             raise ValueError("partial receipt requires a mismatch or omitted field")

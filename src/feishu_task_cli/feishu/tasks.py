@@ -4,6 +4,7 @@ import hashlib
 import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from typing import TypeGuard
 
 from feishu_task_cli.artifacts.base import JsonValueNoFloat
 from feishu_task_cli.artifacts.canonical import canonical_bytes
@@ -12,7 +13,11 @@ from feishu_task_cli.errors import FeishuResponseError
 from feishu_task_cli.feishu.client import FeishuClient
 
 TASK_FIELDS = ("completed_at", "description", "due", "summary")
-SAFE_TASK_GUID = re.compile(r"^[A-Za-z0-9._-]{1,128}$")
+SAFE_TASK_GUID = re.compile(r"^[A-Za-z0-9._-]{1,100}$")
+
+
+def _is_safe_task_guid(value: object) -> TypeGuard[str]:
+    return isinstance(value, str) and SAFE_TASK_GUID.fullmatch(value) is not None
 
 
 @dataclass(frozen=True)
@@ -21,8 +26,13 @@ class TaskSnapshot:
     fields: dict[str, JsonValueNoFloat]
     assignees: tuple[AssigneeRef, ...] = ()
 
+    def __post_init__(self) -> None:
+        if not _is_safe_task_guid(self.guid):
+            raise ValueError("task_guid must be one safe URL path segment")
+
     def to_state(self) -> dict[str, JsonValueNoFloat]:
         state: dict[str, JsonValueNoFloat] = dict(self.fields)
+        state["guid"] = self.guid
         state["assignees"] = [
             {
                 "identifier_type": assignee.identifier_type.value,
@@ -61,13 +71,19 @@ class TaskGateway:
         return f"/open-apis/task/v2/tasks/{task_guid}{suffix}"
 
     def _snapshot(
-        self, payload: object, *, identifier_type: AssigneeIdentifierType
+        self,
+        payload: object,
+        *,
+        identifier_type: AssigneeIdentifierType,
+        expected_guid: str,
     ) -> TaskSnapshot:
         data = _mapping(payload, "Task")
         task = _mapping(data.get("task"), "Task")
         guid = task.get("guid")
-        if not isinstance(guid, str) or not guid.strip():
-            raise FeishuResponseError("Feishu Task response is missing guid")
+        if not _is_safe_task_guid(guid):
+            raise FeishuResponseError("Feishu Task response contains an unsafe task guid")
+        if guid != expected_guid:
+            raise FeishuResponseError("Feishu Task response guid does not match requested guid")
         fields: dict[str, JsonValueNoFloat] = {}
         for name in TASK_FIELDS:
             value = task.get(name)
@@ -102,7 +118,11 @@ class TaskGateway:
             self._task_path(task_guid),
             params={"user_id_type": identifier_type.value},
         )
-        return self._snapshot(payload, identifier_type=identifier_type)
+        return self._snapshot(
+            payload,
+            identifier_type=identifier_type,
+            expected_guid=task_guid,
+        )
 
     @staticmethod
     def _members(assignees: Sequence[AssigneeRef]) -> tuple[str, list[dict[str, str]]]:
@@ -120,8 +140,8 @@ class TaskGateway:
     def _result(payload: object, request_id: str | None) -> MutationResult:
         task = _mapping(_mapping(payload, "mutation").get("task"), "mutation")
         guid = task.get("guid")
-        if not isinstance(guid, str) or not guid.strip():
-            raise FeishuResponseError("Feishu mutation response is missing task guid")
+        if not _is_safe_task_guid(guid):
+            raise FeishuResponseError("Feishu mutation response contains an unsafe task guid")
         return MutationResult(task_guid=guid, request_id=request_id)
 
     def create(

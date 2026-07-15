@@ -17,13 +17,63 @@ from feishu_task_cli.artifacts.plan import (
 from feishu_task_cli.feishu.tasks import TaskGateway
 
 ALLOWED_TASK_FIELDS = frozenset({"completed_at", "description", "due", "summary"})
+MAX_TASK_TEXT_LENGTH = 3000
+MAX_ASSIGNEES = 50
 
 
-def _validate_fields(values: Mapping[str, JsonValueNoFloat]) -> dict[str, JsonValueNoFloat]:
+def _normalize_timestamp(value: object, *, field_name: str) -> str:
+    if isinstance(value, bool) or not isinstance(value, (str, int)):
+        raise ValueError(f"{field_name} must be a millisecond timestamp")
+    normalized = str(value)
+    if not normalized.isascii() or not normalized.isdigit() or len(normalized) > 20:
+        raise ValueError(f"{field_name} must be a non-negative millisecond timestamp")
+    return normalized
+
+
+def _validate_fields(
+    values: Mapping[str, JsonValueNoFloat],
+    *,
+    require_summary: bool = False,
+    require_nonempty: bool = False,
+) -> dict[str, JsonValueNoFloat]:
     fields = dict(values)
     unsupported = sorted(set(fields).difference(ALLOWED_TASK_FIELDS))
     if unsupported:
         raise ValueError(f"unsupported Task fields: {', '.join(unsupported)}")
+
+    if require_nonempty and not fields:
+        raise ValueError("update requires at least one Task field")
+    if require_summary and "summary" not in fields:
+        raise ValueError("create requires summary")
+
+    summary = fields.get("summary")
+    if "summary" in fields and (
+        not isinstance(summary, str) or not summary.strip() or len(summary) > MAX_TASK_TEXT_LENGTH
+    ):
+        raise ValueError("summary must be a non-empty string of at most 3000 characters")
+
+    description = fields.get("description")
+    if "description" in fields and (
+        not isinstance(description, str) or len(description) > MAX_TASK_TEXT_LENGTH
+    ):
+        raise ValueError("description must be a string of at most 3000 characters")
+
+    if "completed_at" in fields:
+        fields["completed_at"] = _normalize_timestamp(
+            fields["completed_at"], field_name="completed_at"
+        )
+
+    if "due" in fields:
+        due = fields["due"]
+        if not isinstance(due, Mapping) or set(due) != {"timestamp", "is_all_day"}:
+            raise ValueError("due must contain exactly timestamp and is_all_day")
+        is_all_day = due["is_all_day"]
+        if not isinstance(is_all_day, bool):
+            raise ValueError("due.is_all_day must be a boolean")
+        fields["due"] = {
+            "timestamp": _normalize_timestamp(due["timestamp"], field_name="due.timestamp"),
+            "is_all_day": is_all_day,
+        }
     return fields
 
 
@@ -33,8 +83,11 @@ def parse_assignee(value: str, *, display_name: str | None = None) -> AssigneeRe
         identifier_type = AssigneeIdentifierType(prefix)
     except (ValueError, AttributeError):
         raise ValueError("typed assignee must use open_id:, user_id:, or union_id:") from None
-    if not identifier.strip():
+    identifier = identifier.strip()
+    if not identifier:
         raise ValueError("typed assignee identifier must be non-empty")
+    if any(character.isspace() for character in identifier):
+        raise ValueError("typed assignee identifier must not contain whitespace")
     return AssigneeRef(
         identifier_type=identifier_type,
         identifier=identifier,
@@ -78,7 +131,15 @@ class Planner:
         parsed = tuple(parse_assignee(value) for value in values)
         if len({item.identifier_type for item in parsed}) > 1:
             raise ValueError("one plan cannot mix assignee identifier types")
-        return parsed
+        deduplicated = tuple(
+            dict.fromkeys((item.identifier_type, item.identifier) for item in parsed)
+        )
+        if len(deduplicated) > MAX_ASSIGNEES:
+            raise ValueError("one plan can contain at most 50 unique assignees")
+        return tuple(
+            AssigneeRef(identifier_type=identifier_type, identifier=identifier)
+            for identifier_type, identifier in deduplicated
+        )
 
     def create(
         self,
@@ -89,7 +150,7 @@ class Planner:
     ) -> PlanV1:
         return PlanV1.build(
             **self._base(Action.CREATE, TaskTarget(tasklist_guid=tasklist_guid)),
-            requested_fields=_validate_fields(requested_fields),
+            requested_fields=_validate_fields(requested_fields, require_summary=True),
             assignees=self._assignees(assignees),
         )
 
@@ -101,10 +162,14 @@ class Planner:
         requested_fields: Mapping[str, JsonValueNoFloat],
         assignees: Sequence[str] = (),
     ) -> PlanV1:
+        normalized_fields = _validate_fields(
+            requested_fields,
+            require_nonempty=action is Action.UPDATE,
+        )
         before = self._gateway.get(task_guid)
         return PlanV1.build(
             **self._base(action, TaskTarget(task_guid=task_guid)),
-            requested_fields=_validate_fields(requested_fields),
+            requested_fields=normalized_fields,
             assignees=self._assignees(assignees),
             observed_before=before.to_state(),
             precondition_fingerprint=before.fingerprint(),
