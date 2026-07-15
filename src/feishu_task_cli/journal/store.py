@@ -14,8 +14,6 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Any
 
-from platformdirs import user_state_path
-
 from feishu_task_cli import __version__
 from feishu_task_cli.errors import (
     JournalCorruptError,
@@ -23,7 +21,7 @@ from feishu_task_cli.errors import (
     ReplayBlockedError,
     UnknownExecutionError,
 )
-from feishu_task_cli.journal.locking import plan_execution_lock
+from feishu_task_cli.journal.locking import default_journal_root, plan_execution_lock
 
 HASH_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 RECORD_KEYS = {
@@ -119,7 +117,7 @@ class ExecutionAttempt:
 
 class ExecutionJournal:
     def __init__(self, root: Path | None = None) -> None:
-        self.root = root or user_state_path("feishu-task-cli") / "executions"
+        self.root = root or default_journal_root()
         self.records_path = self.root / "records"
         self.locks_path = self.root / "locks"
         self._prepare_directory(self.root)
@@ -128,8 +126,16 @@ class ExecutionJournal:
 
     @staticmethod
     def _prepare_directory(path: Path) -> None:
-        path.mkdir(mode=0o700, parents=True, exist_ok=True)
-        details = path.stat()
+        with suppress(OSError):
+            path.mkdir(mode=0o700, parents=True, exist_ok=True)
+        try:
+            details = path.lstat()
+        except OSError as error:
+            raise JournalPermissionError(
+                "journal directory cannot be created or inspected"
+            ) from error
+        if stat.S_ISLNK(details.st_mode) or not stat.S_ISDIR(details.st_mode):
+            raise JournalPermissionError("journal path must be a private directory")
         mode = stat.S_IMODE(details.st_mode)
         if hasattr(os, "getuid") and details.st_uid != os.getuid():
             raise JournalPermissionError("journal directory must be owned by the current user")
@@ -147,9 +153,11 @@ class ExecutionJournal:
 
     def status(self, plan_hash: str) -> JournalRecord | None:
         path = self._record_path(plan_hash)
-        if not path.exists():
+        if not path.exists() and not path.is_symlink():
             return None
-        details = path.stat()
+        details = path.lstat()
+        if stat.S_ISLNK(details.st_mode) or not stat.S_ISREG(details.st_mode):
+            raise JournalPermissionError("journal record must be a private regular file")
         if hasattr(os, "getuid") and details.st_uid != os.getuid():
             raise JournalPermissionError("journal record must be owned by the current user")
         if stat.S_IMODE(details.st_mode) & 0o077:
@@ -213,8 +221,7 @@ class ExecutionJournal:
     @contextmanager
     def execution(self, plan_hash: str) -> Iterator[ExecutionAttempt]:
         self._validate_hash(plan_hash)
-        lock_path = self.locks_path / f"{plan_hash}.lock"
-        with plan_execution_lock(lock_path):
+        with plan_execution_lock(plan_hash, root=self.root):
             existing = self.status(plan_hash)
             if existing is not None:
                 if existing.state is ExecutionState.STARTED:

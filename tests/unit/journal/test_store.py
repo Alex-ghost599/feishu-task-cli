@@ -12,6 +12,7 @@ from feishu_task_cli.errors import (
     ReplayBlockedError,
     UnknownExecutionError,
 )
+from feishu_task_cli.journal.locking import plan_execution_lock
 from feishu_task_cli.journal.store import ExecutionJournal, ExecutionState
 
 PLAN_HASH = "a" * 64
@@ -90,6 +91,28 @@ def test_unsafe_state_directory_permissions_are_rejected(tmp_path: Path) -> None
         ExecutionJournal(root)
 
 
+def test_symlinked_journal_directory_is_rejected(tmp_path: Path) -> None:
+    target = tmp_path / "target"
+    target.mkdir(mode=0o700)
+    root = tmp_path / "journal-link"
+    root.symlink_to(target, target_is_directory=True)
+
+    with pytest.raises(JournalPermissionError, match="directory"):
+        ExecutionJournal(root)
+
+
+def test_symlinked_record_is_rejected(journal: ExecutionJournal, tmp_path: Path) -> None:
+    with journal.execution(PLAN_HASH) as attempt:
+        attempt.complete(ExecutionState.VERIFIED)
+    record = journal.records_path / f"{PLAN_HASH}.json"
+    external = tmp_path / "external-record.json"
+    record.replace(external)
+    record.symlink_to(external)
+
+    with pytest.raises(JournalPermissionError, match="record"):
+        journal.status(PLAN_HASH)
+
+
 def test_attempt_can_only_complete_once(journal: ExecutionJournal) -> None:
     with journal.execution(PLAN_HASH) as attempt:
         attempt.complete(ExecutionState.FAILED)
@@ -129,3 +152,13 @@ def test_escaped_attempt_cannot_overwrite_unknown_after_scope_exit(
     with pytest.raises(ReplayBlockedError, match="active lock scope"):
         escaped.complete(ExecutionState.VERIFIED)
     assert journal.status(PLAN_HASH).state is ExecutionState.UNKNOWN  # type: ignore[union-attr]
+
+
+def test_public_lock_accepts_plan_hash_and_rejects_path_input(tmp_path: Path) -> None:
+    with plan_execution_lock(PLAN_HASH, root=tmp_path):
+        pass
+    with (
+        pytest.raises(ValueError, match="plan_hash"),
+        plan_execution_lock("../../outside", root=tmp_path),
+    ):
+        pass
