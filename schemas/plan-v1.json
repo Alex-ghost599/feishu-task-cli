@@ -1,0 +1,337 @@
+{
+  "$defs": {
+    "Action": {
+      "enum": [
+        "create",
+        "update",
+        "assign",
+        "complete"
+      ],
+      "title": "Action",
+      "type": "string"
+    },
+    "AssigneeIdentifierType": {
+      "enum": [
+        "open_id",
+        "user_id",
+        "union_id"
+      ],
+      "title": "AssigneeIdentifierType",
+      "type": "string"
+    },
+    "AssigneeRef": {
+      "additionalProperties": false,
+      "properties": {
+        "display_name": {
+          "anyOf": [
+            {
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Display Name"
+        },
+        "identifier": {
+          "minLength": 1,
+          "title": "Identifier",
+          "type": "string"
+        },
+        "identifier_type": {
+          "$ref": "#/$defs/AssigneeIdentifierType"
+        }
+      },
+      "required": [
+        "identifier_type",
+        "identifier"
+      ],
+      "title": "AssigneeRef",
+      "type": "object"
+    },
+    "AuthContext": {
+      "additionalProperties": false,
+      "properties": {
+        "account_display": {
+          "pattern": "^[0-9a-f]{12}$",
+          "title": "Account Display",
+          "type": "string"
+        },
+        "account_fingerprint": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Account Fingerprint",
+          "type": "string"
+        },
+        "acting_user_display": {
+          "pattern": "^[0-9a-f]{12}$",
+          "title": "Acting User Display",
+          "type": "string"
+        },
+        "acting_user_fingerprint": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Acting User Fingerprint",
+          "type": "string"
+        },
+        "api_origin": {
+          "pattern": "^https://[A-Za-z0-9.-]+(?::[0-9]+)?$",
+          "title": "Api Origin",
+          "type": "string"
+        },
+        "app_id_display": {
+          "pattern": "^[0-9a-f]{12}$",
+          "title": "App Id Display",
+          "type": "string"
+        },
+        "app_id_fingerprint": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "App Id Fingerprint",
+          "type": "string"
+        },
+        "tenant_display": {
+          "pattern": "^[0-9a-f]{12}$",
+          "title": "Tenant Display",
+          "type": "string"
+        },
+        "tenant_fingerprint": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Tenant Fingerprint",
+          "type": "string"
+        }
+      },
+      "required": [
+        "api_origin",
+        "app_id_fingerprint",
+        "tenant_fingerprint",
+        "account_fingerprint",
+        "acting_user_fingerprint",
+        "app_id_display",
+        "tenant_display",
+        "account_display",
+        "acting_user_display"
+      ],
+      "title": "AuthContext",
+      "type": "object"
+    },
+    "FindingSeverity": {
+      "enum": [
+        "info",
+        "warning",
+        "error"
+      ],
+      "title": "FindingSeverity",
+      "type": "string"
+    },
+    "JsonValueNoFloat": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "integer"
+        },
+        {
+          "type": "boolean"
+        },
+        {
+          "items": {
+            "$ref": "#/$defs/JsonValueNoFloat"
+          },
+          "type": "array"
+        },
+        {
+          "additionalProperties": {
+            "$ref": "#/$defs/JsonValueNoFloat"
+          },
+          "type": "object"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "TaskTarget": {
+      "additionalProperties": false,
+      "properties": {
+        "task_guid": {
+          "anyOf": [
+            {
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Task Guid"
+        },
+        "tasklist_guid": {
+          "anyOf": [
+            {
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Tasklist Guid"
+        }
+      },
+      "title": "TaskTarget",
+      "type": "object"
+    },
+    "ValidationFinding": {
+      "additionalProperties": false,
+      "properties": {
+        "code": {
+          "minLength": 1,
+          "title": "Code",
+          "type": "string"
+        },
+        "message": {
+          "minLength": 1,
+          "title": "Message",
+          "type": "string"
+        },
+        "severity": {
+          "$ref": "#/$defs/FindingSeverity"
+        }
+      },
+      "required": [
+        "code",
+        "severity",
+        "message"
+      ],
+      "title": "ValidationFinding",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "action": {
+      "$ref": "#/$defs/Action"
+    },
+    "artifact_type": {
+      "const": "plan",
+      "default": "plan",
+      "title": "Artifact Type",
+      "type": "string"
+    },
+    "assignees": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/AssigneeRef"
+      },
+      "title": "Assignees",
+      "type": "array"
+    },
+    "auth_context": {
+      "$ref": "#/$defs/AuthContext"
+    },
+    "created_at": {
+      "format": "date-time",
+      "pattern": "^(?:.*Z|.*[+]00:00)$",
+      "title": "Created At",
+      "type": "string"
+    },
+    "expires_at": {
+      "format": "date-time",
+      "pattern": "^(?:.*Z|.*[+]00:00)$",
+      "title": "Expires At",
+      "type": "string"
+    },
+    "observed_before": {
+      "anyOf": [
+        {
+          "additionalProperties": {
+            "$ref": "#/$defs/JsonValueNoFloat"
+          },
+          "type": "object"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Observed Before"
+    },
+    "plan_hash": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Plan Hash",
+      "type": "string"
+    },
+    "plan_id": {
+      "minLength": 1,
+      "title": "Plan Id",
+      "type": "string"
+    },
+    "precondition_fingerprint": {
+      "anyOf": [
+        {
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Precondition Fingerprint"
+    },
+    "requested_fields": {
+      "additionalProperties": {
+        "$ref": "#/$defs/JsonValueNoFloat"
+      },
+      "title": "Requested Fields",
+      "type": "object"
+    },
+    "required_scopes": {
+      "default": [],
+      "items": {
+        "minLength": 1,
+        "type": "string"
+      },
+      "title": "Required Scopes",
+      "type": "array"
+    },
+    "schema_version": {
+      "const": "1",
+      "default": "1",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "target": {
+      "$ref": "#/$defs/TaskTarget"
+    },
+    "tool_version": {
+      "minLength": 1,
+      "title": "Tool Version",
+      "type": "string"
+    },
+    "validation_findings": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/ValidationFinding"
+      },
+      "title": "Validation Findings",
+      "type": "array"
+    }
+  },
+  "required": [
+    "created_at",
+    "tool_version",
+    "plan_id",
+    "action",
+    "target",
+    "requested_fields",
+    "auth_context",
+    "expires_at",
+    "plan_hash"
+  ],
+  "title": "PlanV1",
+  "type": "object"
+}

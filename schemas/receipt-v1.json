@@ -1,0 +1,274 @@
+{
+  "$defs": {
+    "Action": {
+      "enum": [
+        "create",
+        "update",
+        "assign",
+        "complete"
+      ],
+      "title": "Action",
+      "type": "string"
+    },
+    "AuthContext": {
+      "additionalProperties": false,
+      "properties": {
+        "account_display": {
+          "pattern": "^[0-9a-f]{12}$",
+          "title": "Account Display",
+          "type": "string"
+        },
+        "account_fingerprint": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Account Fingerprint",
+          "type": "string"
+        },
+        "acting_user_display": {
+          "pattern": "^[0-9a-f]{12}$",
+          "title": "Acting User Display",
+          "type": "string"
+        },
+        "acting_user_fingerprint": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Acting User Fingerprint",
+          "type": "string"
+        },
+        "api_origin": {
+          "pattern": "^https://[A-Za-z0-9.-]+(?::[0-9]+)?$",
+          "title": "Api Origin",
+          "type": "string"
+        },
+        "app_id_display": {
+          "pattern": "^[0-9a-f]{12}$",
+          "title": "App Id Display",
+          "type": "string"
+        },
+        "app_id_fingerprint": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "App Id Fingerprint",
+          "type": "string"
+        },
+        "tenant_display": {
+          "pattern": "^[0-9a-f]{12}$",
+          "title": "Tenant Display",
+          "type": "string"
+        },
+        "tenant_fingerprint": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Tenant Fingerprint",
+          "type": "string"
+        }
+      },
+      "required": [
+        "api_origin",
+        "app_id_fingerprint",
+        "tenant_fingerprint",
+        "account_fingerprint",
+        "acting_user_fingerprint",
+        "app_id_display",
+        "tenant_display",
+        "account_display",
+        "acting_user_display"
+      ],
+      "title": "AuthContext",
+      "type": "object"
+    },
+    "DeclaredReviewRelationship": {
+      "enum": [
+        "declared_self_reviewed",
+        "declared_independently_reviewed"
+      ],
+      "title": "DeclaredReviewRelationship",
+      "type": "string"
+    },
+    "JsonValueNoFloat": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "integer"
+        },
+        {
+          "type": "boolean"
+        },
+        {
+          "items": {
+            "$ref": "#/$defs/JsonValueNoFloat"
+          },
+          "type": "array"
+        },
+        {
+          "additionalProperties": {
+            "$ref": "#/$defs/JsonValueNoFloat"
+          },
+          "type": "object"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "Outcome": {
+      "enum": [
+        "verified",
+        "partial",
+        "unknown",
+        "failed",
+        "rejected"
+      ],
+      "title": "Outcome",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "action": {
+      "$ref": "#/$defs/Action"
+    },
+    "api_request_id": {
+      "anyOf": [
+        {
+          "minLength": 1,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Api Request Id"
+    },
+    "artifact_type": {
+      "const": "receipt",
+      "default": "receipt",
+      "title": "Artifact Type",
+      "type": "string"
+    },
+    "auth_context": {
+      "$ref": "#/$defs/AuthContext"
+    },
+    "completed_at": {
+      "format": "date-time",
+      "pattern": "^(?:.*Z|.*[+]00:00)$",
+      "title": "Completed At",
+      "type": "string"
+    },
+    "created_at": {
+      "format": "date-time",
+      "pattern": "^(?:.*Z|.*[+]00:00)$",
+      "title": "Created At",
+      "type": "string"
+    },
+    "declared_review_relationship": {
+      "$ref": "#/$defs/DeclaredReviewRelationship"
+    },
+    "executor_id": {
+      "minLength": 1,
+      "title": "Executor Id",
+      "type": "string"
+    },
+    "mismatches": {
+      "default": [],
+      "items": {
+        "minLength": 1,
+        "type": "string"
+      },
+      "title": "Mismatches",
+      "type": "array"
+    },
+    "observed_state": {
+      "additionalProperties": {
+        "$ref": "#/$defs/JsonValueNoFloat"
+      },
+      "title": "Observed State",
+      "type": "object"
+    },
+    "omitted_fields": {
+      "default": [],
+      "items": {
+        "minLength": 1,
+        "type": "string"
+      },
+      "title": "Omitted Fields",
+      "type": "array"
+    },
+    "outcome": {
+      "$ref": "#/$defs/Outcome"
+    },
+    "plan_hash": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Plan Hash",
+      "type": "string"
+    },
+    "receipt_hash": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Receipt Hash",
+      "type": "string"
+    },
+    "requested_state": {
+      "additionalProperties": {
+        "$ref": "#/$defs/JsonValueNoFloat"
+      },
+      "title": "Requested State",
+      "type": "object"
+    },
+    "review_hash": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Review Hash",
+      "type": "string"
+    },
+    "reviewer_id": {
+      "minLength": 1,
+      "title": "Reviewer Id",
+      "type": "string"
+    },
+    "schema_version": {
+      "const": "1",
+      "default": "1",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "started_at": {
+      "format": "date-time",
+      "pattern": "^(?:.*Z|.*[+]00:00)$",
+      "title": "Started At",
+      "type": "string"
+    },
+    "task_guid": {
+      "anyOf": [
+        {
+          "minLength": 1,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Task Guid"
+    },
+    "tool_version": {
+      "minLength": 1,
+      "title": "Tool Version",
+      "type": "string"
+    }
+  },
+  "required": [
+    "created_at",
+    "tool_version",
+    "action",
+    "plan_hash",
+    "review_hash",
+    "declared_review_relationship",
+    "reviewer_id",
+    "executor_id",
+    "auth_context",
+    "started_at",
+    "completed_at",
+    "outcome",
+    "receipt_hash"
+  ],
+  "title": "ReceiptV1",
+  "type": "object"
+}

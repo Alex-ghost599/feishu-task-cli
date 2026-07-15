@@ -1,0 +1,124 @@
+{
+  "$defs": {
+    "CheckedFact": {
+      "enum": [
+        "action_checked",
+        "target_identity_checked",
+        "assignees_checked",
+        "schedule_checked",
+        "auth_context_checked",
+        "precondition_checked"
+      ],
+      "title": "CheckedFact",
+      "type": "string"
+    },
+    "ReviewVerdict": {
+      "enum": [
+        "approved",
+        "rejected"
+      ],
+      "title": "ReviewVerdict",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "artifact_type": {
+      "const": "review",
+      "default": "review",
+      "title": "Artifact Type",
+      "type": "string"
+    },
+    "checked_facts": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/CheckedFact"
+      },
+      "title": "Checked Facts",
+      "type": "array"
+    },
+    "created_at": {
+      "format": "date-time",
+      "pattern": "^(?:.*Z|.*[+]00:00)$",
+      "title": "Created At",
+      "type": "string"
+    },
+    "expires_at": {
+      "format": "date-time",
+      "pattern": "^(?:.*Z|.*[+]00:00)$",
+      "title": "Expires At",
+      "type": "string"
+    },
+    "intended_executor_id": {
+      "anyOf": [
+        {
+          "minLength": 1,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Intended Executor Id"
+    },
+    "plan_hash": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Plan Hash",
+      "type": "string"
+    },
+    "reasons": {
+      "default": [],
+      "items": {
+        "minLength": 1,
+        "type": "string"
+      },
+      "title": "Reasons",
+      "type": "array"
+    },
+    "review_hash": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Review Hash",
+      "type": "string"
+    },
+    "reviewer_id": {
+      "minLength": 1,
+      "title": "Reviewer Id",
+      "type": "string"
+    },
+    "schema_version": {
+      "const": "1",
+      "default": "1",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "tool_version": {
+      "minLength": 1,
+      "title": "Tool Version",
+      "type": "string"
+    },
+    "verdict": {
+      "$ref": "#/$defs/ReviewVerdict"
+    },
+    "warnings": {
+      "default": [],
+      "items": {
+        "minLength": 1,
+        "type": "string"
+      },
+      "title": "Warnings",
+      "type": "array"
+    }
+  },
+  "required": [
+    "created_at",
+    "tool_version",
+    "plan_hash",
+    "reviewer_id",
+    "verdict",
+    "expires_at",
+    "review_hash"
+  ],
+  "title": "ReviewV1",
+  "type": "object"
+}
