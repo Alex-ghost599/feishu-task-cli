@@ -68,7 +68,7 @@ jobs:
           uv pip install --python "$SMOKE_ENV/bin/python" release/packages/*.whl
           "$SMOKE_ENV/bin/feishu-task" --help
           test "$("$SMOKE_ENV/bin/python" -c 'import feishu_task_cli; print(feishu_task_cli.__version__)')" = "${GITHUB_REF_NAME#v}"
-          (cd release && sha256sum packages/* > SHA256SUMS && sha256sum -c SHA256SUMS)
+          (cd release/packages && sha256sum *.whl *.tar.gz > ../SHA256SUMS && sha256sum -c ../SHA256SUMS)
       - name: Upload validated distributions
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
@@ -114,9 +114,9 @@ jobs:
           version: "0.9.11"
       - name: Revalidate downloaded bytes and metadata
         run: |
-          cd release
-          sha256sum -c SHA256SUMS
-          uvx --from twine==6.2.0 twine check packages/*.whl packages/*.tar.gz
+          cd release/packages
+          sha256sum -c ../SHA256SUMS
+          uvx --from twine==6.2.0 twine check *.whl *.tar.gz
       - name: Publish the validated package bytes with trusted publishing
         uses: pypa/gh-action-pypi-publish@ed0c53931b1dc9bd32cbe73a98c7f6766f8a527e
         with:
