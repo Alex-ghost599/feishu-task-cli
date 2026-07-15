@@ -11,7 +11,7 @@ import pytest
 from pydantic import SecretStr
 
 from feishu_task_cli.auth.config import Settings
-from feishu_task_cli.auth.keyring_store import TokenStore
+from feishu_task_cli.auth.keyring_store import TokenStore, TokenStoreError
 from feishu_task_cli.auth.oauth import OAuthClient, OAuthError
 
 
@@ -27,6 +27,13 @@ class MemoryKeyring:
 
     def delete_password(self, service: str, username: str) -> None:
         self.values.pop((service, username), None)
+
+
+class AccessWriteRejectingKeyring(MemoryKeyring):
+    def set_password(self, service: str, username: str, password: str) -> None:
+        if username.endswith("-access"):
+            raise RuntimeError(password)
+        super().set_password(service, username, password)
 
 
 def _settings(
@@ -180,6 +187,33 @@ def test_explicit_localhost_callback_exchanges_code_and_stores_tokens() -> None:
     assert store.get_refresh_token() == "synthetic-refresh"
 
 
+def test_login_surfaces_authorization_denial_without_waiting_for_timeout() -> None:
+    redirect_uri = _free_loopback_uri()
+
+    def browser_open(url: str) -> bool:
+        query = urllib.parse.parse_qs(urllib.parse.urlsplit(url).query)
+        callback = query["redirect_uri"][0]
+        state = query["state"][0]
+
+        def invoke() -> None:
+            with urllib.request.urlopen(
+                f"{callback}?error=access_denied&state={urllib.parse.quote(state)}"
+            ) as response:
+                assert response.status == 200
+
+        threading.Thread(target=invoke, daemon=True).start()
+        return True
+
+    client = OAuthClient(
+        settings=_settings(redirect_uri=redirect_uri),
+        store=_store(),
+        browser_open=browser_open,
+    )
+
+    with pytest.raises(OAuthError, match="authorization was denied"):
+        client.login(timeout=2)
+
+
 def test_refresh_retries_one_confirmed_connect_error_and_stores_rotation() -> None:
     post_attempts = 0
     store = _store()
@@ -263,6 +297,64 @@ def test_refresh_requires_rotated_refresh_token() -> None:
         client.refresh()
     assert store.get_refresh_token() == "synthetic-old-refresh"
     assert store.get_access_token() is None
+
+
+def test_refresh_persists_rotation_before_transient_identity_failure() -> None:
+    store = _store()
+    store.set_refresh_token("synthetic-old-refresh")
+
+    def transport(request: httpx.Request) -> httpx.Response:
+        if request.method == "GET":
+            raise httpx.ConnectError("synthetic identity failure", request=request)
+        return httpx.Response(
+            200,
+            json={
+                "code": 0,
+                "access_token": "synthetic-new-access",
+                "refresh_token": "synthetic-new-refresh",
+            },
+        )
+
+    client = OAuthClient(
+        settings=_settings(),
+        store=store,
+        http_client=httpx.Client(transport=httpx.MockTransport(transport)),
+    )
+
+    with pytest.raises(OAuthError, match="identity transport failed"):
+        client.refresh()
+    assert store.get_refresh_token() == "synthetic-new-refresh"
+    assert store.get_access_token() == "synthetic-new-access"
+
+
+def test_refresh_preserves_new_refresh_when_access_storage_fails() -> None:
+    backend = AccessWriteRejectingKeyring()
+    store = TokenStore(
+        app_id="cli_synthetic",
+        account_id="synthetic_account",
+        backend=backend,
+    )
+    store.set_refresh_token("synthetic-old-refresh")
+    client = OAuthClient(
+        settings=_settings(),
+        store=store,
+        http_client=httpx.Client(
+            transport=httpx.MockTransport(
+                lambda request: httpx.Response(
+                    200,
+                    json={
+                        "code": 0,
+                        "access_token": "synthetic-new-access",
+                        "refresh_token": "synthetic-new-refresh",
+                    },
+                )
+            )
+        ),
+    )
+
+    with pytest.raises(TokenStoreError, match="keyring could not store"):
+        client.refresh()
+    assert store.get_refresh_token() == "synthetic-new-refresh"
 
 
 def test_oauth_invalid_json_has_no_leaking_exception_chain() -> None:

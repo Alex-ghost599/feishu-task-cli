@@ -21,6 +21,10 @@ class OAuthError(RuntimeError):
     """A stable OAuth failure that never renders remote bodies or secrets."""
 
 
+class _OAuthIdentityMismatchError(OAuthError):
+    """A definitive identity mismatch requiring removal of newly stored tokens."""
+
+
 @dataclass(frozen=True)
 class AuthStatus:
     authenticated: bool
@@ -86,6 +90,7 @@ class OAuthClient:
             parsed.scheme != "http"
             or parsed.hostname != "127.0.0.1"
             or port is None
+            or port == 0
             or parsed.path in ("", "/")
             or parsed.query
             or parsed.fragment
@@ -122,12 +127,18 @@ class OAuthClient:
             def do_GET(self) -> None:  # noqa: N802
                 request_target = urlsplit(self.path)
                 query = parse_qs(request_target.query)
+                denied = query.get("error") == ["access_denied"]
                 if (
                     request_target.path != target.path
                     or query.get("state") != [state]
-                    or len(query.get("code", [])) != 1
+                    or (len(query.get("code", [])) != 1 and not denied)
                 ):
                     self.send_response(400)
+                    self.end_headers()
+                    return
+                if denied:
+                    callback["error"] = "access_denied"
+                    self.send_response(200)
                     self.end_headers()
                     return
                 callback["code"] = query["code"][0]
@@ -149,9 +160,15 @@ class OAuthClient:
             raise OAuthError("configured OAuth callback address is unavailable")
         deadline = time.monotonic() + timeout
         try:
-            if not self._browser_open(self.authorization_url(state=state)):
+            browser_failed = False
+            try:
+                browser_opened = self._browser_open(self.authorization_url(state=state))
+            except Exception:
+                browser_failed = True
+                browser_opened = False
+            if browser_failed or not browser_opened:
                 raise OAuthError("browser could not be opened for explicit OAuth setup")
-            while "code" not in callback:
+            while "code" not in callback and "error" not in callback:
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
                     break
@@ -159,6 +176,8 @@ class OAuthClient:
                 server.handle_request()
         finally:
             server.server_close()
+        if callback.get("error") == "access_denied":
+            raise OAuthError("OAuth authorization was denied")
         code = callback.get("code")
         if code is None:
             raise OAuthError("OAuth callback was not received before timeout")
@@ -191,9 +210,16 @@ class OAuthClient:
             raise OAuthError("OAuth token response did not contain an access token")
         if not isinstance(refresh, str) or not refresh:
             raise OAuthError("OAuth token response did not contain a rotated refresh token")
-        self._identity_for_token(access)
         self.store.set_refresh_token(refresh)
         self.store.set_access_token(access)
+        mismatch: _OAuthIdentityMismatchError | None = None
+        try:
+            self._identity_for_token(access)
+        except _OAuthIdentityMismatchError as error:
+            mismatch = error
+        if mismatch is not None:
+            self.store.clear()
+            raise mismatch
 
     def exchange_code(self, *, code: str) -> None:
         if not code:
@@ -279,12 +305,16 @@ class OAuthClient:
         declared_account = self.settings.account_id
         assert declared_account is not None
         if declared_account not in account_candidates:
-            raise OAuthError("verified identity does not match the declared account")
+            raise _OAuthIdentityMismatchError(
+                "verified identity does not match the declared account"
+            )
         tenant = safe_identity.get("tenant_id") or safe_identity.get("tenant_key")
         if tenant is None:
             raise OAuthError("verified identity is missing tenant_id")
         if self.settings.tenant_id is not None and tenant != self.settings.tenant_id:
-            raise OAuthError("verified identity does not match the declared tenant")
+            raise _OAuthIdentityMismatchError(
+                "verified identity does not match the declared tenant"
+            )
         actor = (
             safe_identity.get("actor_id")
             or safe_identity.get("open_id")

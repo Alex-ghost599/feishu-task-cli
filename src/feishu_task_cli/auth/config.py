@@ -21,11 +21,16 @@ class UnsafeConfigError(ValueError):
 
 def _read_private_config(path: Path) -> dict[str, object]:
     parse_failed = False
+    read_failed = False
     flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+    descriptor = -1
+    open_failed = False
     try:
         descriptor = os.open(path, flags)
-    except OSError as error:
-        raise UnsafeConfigError("secret config must be a current-user regular file") from error
+    except OSError:
+        open_failed = True
+    if open_failed:
+        raise UnsafeConfigError("secret config must be a current-user regular file")
     try:
         metadata = os.fstat(descriptor)
         if not stat.S_ISREG(metadata.st_mode):
@@ -41,9 +46,14 @@ def _read_private_config(path: Path) -> dict[str, object]:
             except yaml.YAMLError:
                 parse_failed = True
                 loaded = None
+    except (OSError, UnicodeError):
+        read_failed = True
+        loaded = None
     finally:
         if descriptor >= 0:
             os.close(descriptor)
+    if read_failed:
+        raise ValueError("secret config could not be read")
     if parse_failed:
         raise ValueError("secret config could not be parsed")
     if not isinstance(loaded, dict) or not all(isinstance(key, str) for key in loaded):
@@ -98,6 +108,7 @@ def _redirect_uri(value: object) -> str | None:
         parsed.scheme != "http"
         or parsed.hostname != "127.0.0.1"
         or port is None
+        or port == 0
         or parsed.username is not None
         or parsed.password is not None
         or parsed.path in ("", "/")
