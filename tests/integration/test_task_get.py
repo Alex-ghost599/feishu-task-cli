@@ -3,8 +3,9 @@ from __future__ import annotations
 import httpx
 import pytest
 
+from feishu_task_cli.errors import FeishuResponseError
 from feishu_task_cli.feishu.client import FeishuClient
-from feishu_task_cli.feishu.tasks import TaskGateway
+from feishu_task_cli.feishu.tasks import TaskGateway, TaskSnapshot
 
 
 def test_task_get_normalizes_raw_feishu_payload() -> None:
@@ -42,7 +43,36 @@ def test_task_get_normalizes_raw_feishu_payload() -> None:
     assert [item.identifier for item in task.assignees] == ["ou_synthetic"]
 
 
-@pytest.mark.parametrize("task_guid", ["../tasks/other", "task?x=1", "task/child", ""])
+def test_task_get_rejects_response_for_a_different_guid() -> None:
+    client = FeishuClient(
+        api_origin="https://open.feishu.cn",
+        access_token="synthetic-access-token-value",
+        http_client=httpx.Client(
+            transport=httpx.MockTransport(
+                lambda request: httpx.Response(
+                    200,
+                    json={"code": 0, "data": {"task": {"guid": "task_other"}}},
+                )
+            )
+        ),
+    )
+
+    with pytest.raises(FeishuResponseError, match="does not match requested guid"):
+        TaskGateway(client).get("task_synthetic")
+
+
+def test_task_snapshot_fingerprint_binds_guid() -> None:
+    first = TaskSnapshot(guid="task_first", fields={"summary": "Same"})
+    second = TaskSnapshot(guid="task_second", fields={"summary": "Same"})
+
+    assert first.fingerprint() != second.fingerprint()
+    assert first.to_state()["guid"] == "task_first"
+
+
+@pytest.mark.parametrize(
+    "task_guid",
+    ["../tasks/other", "task?x=1", "task/child", "", "x" * 101],
+)
 def test_task_guid_must_be_one_safe_path_segment(task_guid: str) -> None:
     client = FeishuClient(
         api_origin="https://open.feishu.cn",

@@ -32,6 +32,7 @@ EXIT_BY_OUTCOME = {
     Outcome.UNKNOWN: 6,
     Outcome.PARTIAL: 7,
 }
+AMBIGUOUS_MUTATION_STATUSES = frozenset({408})
 
 
 def exit_code_for_receipt(receipt: ReceiptV1) -> int:
@@ -167,14 +168,17 @@ class Executor:
                     outcome=Outcome.UNKNOWN,
                 )
             except FeishuAPIError as error:
-                attempt.complete(ExecutionState.FAILED)
+                ambiguous = (
+                    error.status_code >= 500 or error.status_code in AMBIGUOUS_MUTATION_STATUSES
+                )
+                attempt.complete(ExecutionState.UNKNOWN if ambiguous else ExecutionState.FAILED)
                 return self._receipt(
                     plan=plan,
                     review=review,
                     executor_id=executor_id,
                     relationship=relationship,
                     started_at=started,
-                    outcome=Outcome.FAILED,
+                    outcome=Outcome.UNKNOWN if ambiguous else Outcome.FAILED,
                     request_id=error.request_id,
                 )
 

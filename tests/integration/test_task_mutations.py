@@ -98,3 +98,24 @@ def test_accepted_mutation_without_returned_guid_is_typed_ambiguous_response() -
     )
     with pytest.raises(FeishuResponseError, match="invalid shape"):
         TaskGateway(client).create({"summary": "Synthetic"})
+
+
+@pytest.mark.parametrize("returned_guid", ["../task_other", "x" * 101])
+def test_accepted_mutation_with_unsafe_returned_guid_is_typed_ambiguous_response(
+    returned_guid: str,
+) -> None:
+    client = FeishuClient(
+        api_origin="https://open.feishu.cn",
+        access_token="synthetic-access-token-value",
+        http_client=httpx.Client(
+            transport=httpx.MockTransport(
+                lambda request: httpx.Response(
+                    200,
+                    json={"code": 0, "data": {"task": {"guid": returned_guid}}},
+                )
+            )
+        ),
+    )
+
+    with pytest.raises(FeishuResponseError, match="unsafe task guid"):
+        TaskGateway(client).create({"summary": "Synthetic"})

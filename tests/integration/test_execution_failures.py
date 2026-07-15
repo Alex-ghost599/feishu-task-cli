@@ -13,7 +13,14 @@ from feishu_task_cli.application.executor import (
 )
 from feishu_task_cli.application.policy_engine import build_neutral_policy
 from feishu_task_cli.application.reviewer import build_review
-from feishu_task_cli.artifacts.plan import Action, AuthContext, PlanV1, TaskTarget
+from feishu_task_cli.artifacts.plan import (
+    Action,
+    AssigneeIdentifierType,
+    AssigneeRef,
+    AuthContext,
+    PlanV1,
+    TaskTarget,
+)
 from feishu_task_cli.artifacts.receipt import Outcome
 from feishu_task_cli.artifacts.review import ReviewVerdict
 from feishu_task_cli.auth.context import build_auth_context
@@ -154,6 +161,44 @@ def test_readback_mismatch_is_partial_and_never_replayed(tmp_path: Path) -> None
     assert gateway.mutations == 1
 
 
+def test_incremental_assign_with_existing_member_emits_verified_receipt(
+    tmp_path: Path,
+) -> None:
+    existing = AssigneeRef(
+        identifier_type=AssigneeIdentifierType.USER_ID,
+        identifier="user_existing",
+    )
+    requested = AssigneeRef(
+        identifier_type=AssigneeIdentifierType.USER_ID,
+        identifier="user_requested",
+    )
+    before = TaskSnapshot(guid="task_synthetic", fields={}, assignees=(existing,))
+    plan = PlanV1.build(
+        created_at=NOW,
+        tool_version=__version__,
+        plan_id="plan_assign_synthetic",
+        action=Action.ASSIGN,
+        target=TaskTarget(task_guid="task_synthetic"),
+        requested_fields={
+            "assignees": [{"identifier_type": "user_id", "identifier": "user_requested"}]
+        },
+        assignees=(requested,),
+        auth_context=AUTH,
+        expires_at=NOW + timedelta(minutes=15),
+        observed_before=before.to_state(),
+        precondition_fingerprint=before.fingerprint(),
+    )
+    after = TaskSnapshot(guid="task_synthetic", fields={}, assignees=(existing, requested))
+    gateway = StubGateway([before, after])
+
+    receipt = executor(gateway, tmp_path).execute(
+        plan, approved(plan), build_neutral_policy(created_at=NOW), "agent-executor"
+    )
+
+    assert receipt.outcome is Outcome.VERIFIED
+    assert gateway.mutations == 1
+
+
 def test_ambiguous_mutation_is_unknown_and_attempted_once(tmp_path: Path) -> None:
     plan = create_plan()
     gateway = StubGateway([])
@@ -191,6 +236,27 @@ def test_definitive_api_failure_is_failed(tmp_path: Path) -> None:
     assert receipt.outcome is Outcome.FAILED
     assert exit_code_for_receipt(receipt) == 5
     assert gateway.mutations == 1
+
+
+@pytest.mark.parametrize("status_code", [408, 500, 502, 503, 504])
+def test_ambiguous_mutation_http_failure_is_unknown(tmp_path: Path, status_code: int) -> None:
+    plan = create_plan()
+    gateway = StubGateway([])
+    gateway.failure = FeishuAPIError(
+        status_code=status_code,
+        api_code=1470500,
+        request_id="req-safe",
+        retryable=False,
+    )
+
+    receipt = executor(gateway, tmp_path / "journal").execute(
+        plan, approved(plan), build_neutral_policy(created_at=NOW), "agent-executor"
+    )
+
+    assert receipt.outcome is Outcome.UNKNOWN
+    assert exit_code_for_receipt(receipt) == 6
+    record = ExecutionJournal(tmp_path / "journal").status(plan.plan_hash)
+    assert record is not None and record.state is ExecutionState.UNKNOWN
 
 
 def test_readback_failure_after_accepted_mutation_is_unknown_and_not_replayable(

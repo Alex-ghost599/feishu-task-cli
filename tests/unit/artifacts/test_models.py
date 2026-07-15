@@ -259,6 +259,20 @@ def test_partial_receipt_must_explain_why_readback_is_partial() -> None:
         receipt(outcome=Outcome.PARTIAL)
 
 
+def test_verified_receipt_accepts_requested_assignees_as_observed_subset() -> None:
+    requested = {"assignees": [{"identifier_type": "open_id", "identifier": "ou_requested"}]}
+    observed = {
+        "assignees": [
+            {"identifier_type": "open_id", "identifier": "ou_existing"},
+            {"identifier_type": "open_id", "identifier": "ou_requested"},
+        ]
+    }
+
+    verified = receipt(requested_state=requested, observed_state=observed)
+
+    assert verified.outcome is Outcome.VERIFIED
+
+
 def test_hash_changes_when_review_or_receipt_content_changes() -> None:
     created_plan = plan(auth_context())
     base = {
