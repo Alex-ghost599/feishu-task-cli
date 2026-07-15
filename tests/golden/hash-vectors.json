@@ -1,0 +1,11 @@
+[
+  {
+    "name": "unicode-and-key-order",
+    "input": {
+      "z": 1,
+      "a": "任务"
+    },
+    "canonical": "{\"a\":\"任务\",\"z\":1}",
+    "sha256": "f04158476f2203f190adb07bf9db938cc504b85a8ffaa23e4cceb28a06204e60"
+  }
+]

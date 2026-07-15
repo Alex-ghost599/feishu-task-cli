@@ -415,7 +415,7 @@ wheels = [
 
 [[package]]
 name = "feishu-task-cli"
-version = "0.0.0"
+version = "0.1.0"
 source = { editable = "." }
 dependencies = [
     { name = "filelock" },
@@ -426,6 +426,7 @@ dependencies = [
     { name = "pyyaml" },
     { name = "rfc8785" },
     { name = "typer" },
+    { name = "typing-extensions" },
 ]
 
 [package.optional-dependencies]
@@ -460,6 +461,7 @@ requires-dist = [
     { name = "twine", marker = "extra == 'test'", specifier = ">=6.1,<7" },
     { name = "typer", specifier = ">=0.16,<1" },
     { name = "types-pyyaml", marker = "extra == 'test'", specifier = ">=6.0,<7" },
+    { name = "typing-extensions", specifier = ">=4.12,<5" },
 ]
 provides-extras = ["test"]
 
