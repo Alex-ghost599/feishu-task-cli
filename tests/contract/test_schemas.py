@@ -33,3 +33,17 @@ def test_schemas_require_integrity_hashes() -> None:
     for filename, hash_field in expected.items():
         schema = json.loads((ROOT / "schemas" / filename).read_text(encoding="utf-8"))
         assert hash_field in schema["required"]
+        assert schema["properties"][hash_field]["pattern"] == "^[0-9a-f]{64}$"
+
+
+def test_schemas_express_integer_only_business_json_and_safe_origins() -> None:
+    plan_schema = json.loads((ROOT / "schemas" / "plan-v1.json").read_text(encoding="utf-8"))
+    json_value = plan_schema["$defs"]["JsonValueNoFloat"]
+    serialized = json.dumps(json_value, sort_keys=True)
+
+    assert '"type": "integer"' in serialized
+    assert '"type": "number"' not in serialized
+    origin = plan_schema["$defs"]["AuthContext"]["properties"]["api_origin"]
+    assert origin["pattern"].startswith("^https://")
+    assert "pattern" in plan_schema["properties"]["created_at"]
+    assert "pattern" in plan_schema["properties"]["expires_at"]

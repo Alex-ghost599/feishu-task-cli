@@ -8,6 +8,7 @@ from pydantic import ValidationError
 from feishu_task_cli.artifacts.plan import (
     Action,
     AssigneeIdentifierType,
+    AssigneeRef,
     AuthContext,
     FindingSeverity,
     PlanV1,
@@ -62,6 +63,38 @@ def existing_task_plan(**overrides: object) -> PlanV1:
     }
     values.update(overrides)
     return PlanV1.build(**values)
+
+
+def receipt(**overrides: object) -> ReceiptV1:
+    created_plan = plan(auth_context())
+    review = ReviewV1.build(
+        created_at=NOW,
+        tool_version="0.0.0",
+        plan_hash=created_plan.plan_hash,
+        reviewer_id="agent-reviewer",
+        intended_executor_id="agent-executor",
+        verdict=ReviewVerdict.APPROVED,
+        expires_at=NOW + timedelta(minutes=10),
+    )
+    values: dict[str, object] = {
+        "created_at": NOW + timedelta(seconds=2),
+        "tool_version": "0.0.0",
+        "action": Action.CREATE,
+        "plan_hash": created_plan.plan_hash,
+        "review_hash": review.review_hash,
+        "declared_review_relationship": DeclaredReviewRelationship.INDEPENDENTLY_REVIEWED,
+        "reviewer_id": "agent-reviewer",
+        "executor_id": "agent-executor",
+        "auth_context": created_plan.auth_context,
+        "task_guid": "task_example",
+        "requested_state": created_plan.requested_fields,
+        "observed_state": created_plan.requested_fields,
+        "started_at": NOW + timedelta(seconds=1),
+        "completed_at": NOW + timedelta(seconds=2),
+        "outcome": Outcome.VERIFIED,
+    }
+    values.update(overrides)
+    return ReceiptV1.build(**values)
 
 
 def test_unknown_fields_are_rejected() -> None:
@@ -122,6 +155,35 @@ def test_supplied_hash_must_match_and_use_sha256_shape() -> None:
         PlanV1.model_validate(payload)
 
 
+def test_business_state_rejects_floating_point_values() -> None:
+    values = plan(auth_context()).model_dump(exclude={"plan_hash"})
+    values["requested_fields"] = {"progress": 0.5}
+
+    with pytest.raises(ValidationError):
+        PlanV1.build(**values)
+
+
+@pytest.mark.parametrize("value", ["", "   "])
+def test_authoritative_identifiers_reject_blank_values(value: str) -> None:
+    plan_values = plan(auth_context()).model_dump(exclude={"plan_hash"})
+    plan_values["plan_id"] = value
+    with pytest.raises(ValidationError):
+        PlanV1.build(**plan_values)
+
+    with pytest.raises(ValidationError):
+        ReviewV1.build(
+            created_at=NOW,
+            tool_version="0.0.0",
+            plan_hash=plan(auth_context()).plan_hash,
+            reviewer_id=value,
+            verdict=ReviewVerdict.APPROVED,
+            expires_at=NOW + timedelta(minutes=10),
+        )
+
+    with pytest.raises(ValidationError):
+        AssigneeRef(identifier_type=AssigneeIdentifierType.OPEN_ID, identifier=value)
+
+
 @pytest.mark.parametrize("replacement", [None, ""])
 def test_deserialized_plan_requires_its_original_hash(replacement: str | None) -> None:
     payload = plan(auth_context()).model_dump(mode="json")
@@ -170,6 +232,32 @@ def test_review_policy_and_receipt_bind_their_own_hashes() -> None:
     assert all(len(value) == 64 for value in hashes)
 
 
+@pytest.mark.parametrize(
+    ("overrides", "message"),
+    [
+        ({"mismatches": ("summary",)}, "verified receipt"),
+        ({"omitted_fields": ("summary",)}, "verified receipt"),
+        ({"observed_state": {"summary": "different"}}, "requested state"),
+        ({"task_guid": None}, "requires task_guid"),
+    ],
+)
+def test_verified_receipt_rejects_contradictions(
+    overrides: dict[str, object], message: str
+) -> None:
+    with pytest.raises(ValidationError, match=message):
+        receipt(**overrides)
+
+
+def test_declared_review_relationship_must_match_identities() -> None:
+    with pytest.raises(ValidationError, match="relationship"):
+        receipt(executor_id="agent-reviewer")
+
+
+def test_partial_receipt_must_explain_why_readback_is_partial() -> None:
+    with pytest.raises(ValidationError, match="partial receipt"):
+        receipt(outcome=Outcome.PARTIAL)
+
+
 def test_hash_changes_when_review_or_receipt_content_changes() -> None:
     created_plan = plan(auth_context())
     base = {
@@ -201,6 +289,36 @@ def test_original_hash_rejects_tampered_artifact() -> None:
 
     with pytest.raises(ValidationError, match="does not match"):
         PlanV1.model_validate(payload)
+
+
+def test_all_external_artifacts_reject_cleared_or_missing_integrity_hash() -> None:
+    created_plan = plan(auth_context())
+    review = ReviewV1.build(
+        created_at=NOW,
+        tool_version="0.0.0",
+        plan_hash=created_plan.plan_hash,
+        reviewer_id="agent-reviewer",
+        verdict=ReviewVerdict.APPROVED,
+        expires_at=NOW + timedelta(minutes=10),
+    )
+    policy = PolicyV1.build(created_at=NOW, tool_version="0.0.0")
+    artifacts = (
+        (created_plan, "plan_hash", "requested_fields", {"summary": "tampered"}),
+        (review, "review_hash", "warnings", ["tampered"]),
+        (policy, "policy_hash", "reject_warnings", True),
+        (receipt(), "receipt_hash", "api_request_id", "tampered"),
+    )
+
+    for artifact, hash_field, content_field, tampered_value in artifacts:
+        payload = artifact.model_dump(mode="json")
+        payload[content_field] = tampered_value
+        payload[hash_field] = ""
+        with pytest.raises(ValidationError):
+            type(artifact).model_validate(payload)
+
+        payload.pop(hash_field)
+        with pytest.raises(ValidationError):
+            type(artifact).model_validate(payload)
 
 
 def test_enum_values_are_stable() -> None:

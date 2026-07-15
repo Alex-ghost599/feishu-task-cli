@@ -70,6 +70,7 @@
     "reasons": {
       "default": [],
       "items": {
+        "minLength": 1,
         "type": "string"
       },
       "title": "Reasons",
@@ -102,6 +103,7 @@
     "warnings": {
       "default": [],
       "items": {
+        "minLength": 1,
         "type": "string"
       },
       "title": "Warnings",

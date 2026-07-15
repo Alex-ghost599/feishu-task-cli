@@ -92,9 +92,9 @@ class AssigneeRef(StrictModel):
 
 
 class ValidationFinding(StrictModel):
-    code: str
+    code: NonEmptyString
     severity: FindingSeverity
-    message: str
+    message: NonEmptyString
 
 
 class PlanV1(ArtifactV1):
@@ -106,7 +106,7 @@ class PlanV1(ArtifactV1):
     requested_fields: dict[str, JsonValueNoFloat]
     assignees: tuple[AssigneeRef, ...] = ()
     validation_findings: tuple[ValidationFinding, ...] = ()
-    required_scopes: tuple[str, ...] = ()
+    required_scopes: tuple[NonEmptyString, ...] = ()
     auth_context: AuthContext
     expires_at: UtcDateTime
     observed_before: dict[str, JsonValueNoFloat] | None = None

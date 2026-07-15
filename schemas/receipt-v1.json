@@ -171,6 +171,7 @@
     "mismatches": {
       "default": [],
       "items": {
+        "minLength": 1,
         "type": "string"
       },
       "title": "Mismatches",
@@ -186,6 +187,7 @@
     "omitted_fields": {
       "default": [],
       "items": {
+        "minLength": 1,
         "type": "string"
       },
       "title": "Omitted Fields",

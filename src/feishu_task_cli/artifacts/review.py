@@ -32,8 +32,8 @@ class ReviewV1(ArtifactV1):
     intended_executor_id: NonEmptyString | None = None
     verdict: ReviewVerdict
     checked_facts: tuple[CheckedFact, ...] = ()
-    warnings: tuple[str, ...] = ()
-    reasons: tuple[str, ...] = ()
+    warnings: tuple[NonEmptyString, ...] = ()
+    reasons: tuple[NonEmptyString, ...] = ()
     expires_at: UtcDateTime
     review_hash: ArtifactHash
 

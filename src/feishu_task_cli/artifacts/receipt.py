@@ -42,8 +42,8 @@ class ReceiptV1(ArtifactV1):
     task_guid: NonEmptyString | None = None
     requested_state: dict[str, JsonValueNoFloat] = Field(default_factory=dict)
     observed_state: dict[str, JsonValueNoFloat] = Field(default_factory=dict)
-    mismatches: tuple[str, ...] = ()
-    omitted_fields: tuple[str, ...] = ()
+    mismatches: tuple[NonEmptyString, ...] = ()
+    omitted_fields: tuple[NonEmptyString, ...] = ()
     api_request_id: NonEmptyString | None = None
     started_at: UtcDateTime
     completed_at: UtcDateTime
