@@ -18,8 +18,10 @@ from feishu_task_cli.artifacts.plan import (
     AssigneeIdentifierType,
     AssigneeRef,
     AuthContext,
+    FindingSeverity,
     PlanV1,
     TaskTarget,
+    ValidationFinding,
 )
 from feishu_task_cli.artifacts.receipt import Outcome
 from feishu_task_cli.artifacts.review import ReviewVerdict
@@ -300,6 +302,44 @@ def test_auth_context_mismatch_fails_before_journal_or_mutation(tmp_path: Path) 
     assert ExecutionJournal(tmp_path / "journal").status(plan.plan_hash) is None
 
 
+def test_unresolved_error_finding_fails_before_auth_network_or_journal(tmp_path: Path) -> None:
+    values = create_plan().model_dump(exclude={"plan_hash"})
+    values["validation_findings"] = (
+        ValidationFinding(
+            code="synthetic_error",
+            severity=FindingSeverity.ERROR,
+            message="must not execute",
+        ),
+    )
+    plan = PlanV1.build(**values)
+    gateway = StubGateway([])
+    auth_calls = 0
+
+    def resolve_auth() -> AuthContext:
+        nonlocal auth_calls
+        auth_calls += 1
+        return AUTH
+
+    service = Executor(
+        gateway,
+        auth_context_resolver=resolve_auth,
+        journal=ExecutionJournal(tmp_path / "journal"),
+        now=lambda: NOW + timedelta(seconds=2),
+    )
+
+    with pytest.raises(PolicyRejectedError, match="validation errors"):
+        service.execute(
+            plan,
+            approved(plan),
+            build_neutral_policy(created_at=NOW),
+            "agent-executor",
+        )
+
+    assert auth_calls == 0
+    assert gateway.mutations == 0
+    assert ExecutionJournal(tmp_path / "journal").status(plan.plan_hash) is None
+
+
 def test_precondition_drift_fails_before_journal_or_mutation(tmp_path: Path) -> None:
     before = TaskSnapshot(guid="task_synthetic", fields={"summary": "Before"})
     plan = existing_plan(before)
@@ -308,6 +348,28 @@ def test_precondition_drift_fails_before_journal_or_mutation(tmp_path: Path) -> 
         executor(gateway, tmp_path / "journal").execute(
             plan, approved(plan), build_neutral_policy(created_at=NOW), "agent-executor"
         )
+    assert gateway.mutations == 0
+    assert ExecutionJournal(tmp_path / "journal").status(plan.plan_hash) is None
+
+
+def test_whitespace_only_precondition_drift_is_detected(tmp_path: Path) -> None:
+    before = TaskSnapshot(
+        guid="task_synthetic",
+        fields={"summary": "  Padded summary  "},
+    )
+    plan = existing_plan(before)
+    gateway = StubGateway(
+        [TaskSnapshot(guid="task_synthetic", fields={"summary": "Padded summary"})]
+    )
+
+    with pytest.raises(PreconditionChangedError):
+        executor(gateway, tmp_path / "journal").execute(
+            plan,
+            approved(plan),
+            build_neutral_policy(created_at=NOW),
+            "agent-executor",
+        )
+
     assert gateway.mutations == 0
     assert ExecutionJournal(tmp_path / "journal").status(plan.plan_hash) is None
 

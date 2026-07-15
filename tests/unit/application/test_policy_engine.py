@@ -16,8 +16,10 @@ from feishu_task_cli.artifacts.plan import (
     AssigneeIdentifierType,
     AssigneeRef,
     AuthContext,
+    FindingSeverity,
     PlanV1,
     TaskTarget,
+    ValidationFinding,
 )
 from feishu_task_cli.artifacts.policy import PolicyV1
 from feishu_task_cli.artifacts.receipt import DeclaredReviewRelationship
@@ -139,6 +141,27 @@ def test_rejected_or_expired_review_is_blocked() -> None:
             policy(),
             "agent-b",
             now=NOW + timedelta(minutes=6),
+        )
+
+
+def test_unresolved_error_finding_blocks_execution_review() -> None:
+    values = plan().model_dump(exclude={"plan_hash"})
+    values["validation_findings"] = (
+        ValidationFinding(
+            code="synthetic_error",
+            severity=FindingSeverity.ERROR,
+            message="must not execute",
+        ),
+    )
+    flagged_plan = PlanV1.build(**values)
+
+    with pytest.raises(PolicyRejectedError, match="validation errors"):
+        validate_execution_review(
+            flagged_plan,
+            review(plan=flagged_plan),
+            policy(),
+            "agent-b",
+            now=NOW,
         )
 
 
