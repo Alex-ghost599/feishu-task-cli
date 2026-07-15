@@ -64,6 +64,16 @@ class TokenStore:
             raise TokenStoreError("keyring could not read authentication material")
         return result
 
+    def _delete(self, kind: str) -> None:
+        failed = False
+        try:
+            with suppress(PasswordDeleteError):
+                self.backend.delete_password(SERVICE_NAME, self._username(kind))
+        except Exception:
+            failed = True
+        if failed:
+            raise TokenStoreError("keyring could not clear authentication material")
+
     def set_access_token(self, token: str) -> None:
         self._set("access", token)
 
@@ -71,18 +81,23 @@ class TokenStore:
         self._set("refresh", token)
 
     def get_access_token(self) -> str | None:
+        if self._get("transaction") is not None:
+            return None
         return self._get("access")
 
     def get_refresh_token(self) -> str | None:
         return self._get("refresh")
 
+    def commit_tokens(self, *, access_token: str, refresh_token: str) -> None:
+        """Commit a rotated token pair while making interrupted state fail closed."""
+        if not access_token or not refresh_token:
+            raise ValueError("token pair must be non-empty")
+        self._set("transaction", "pending-v1")
+        self._set("refresh", refresh_token)
+        self._delete("access")
+        self._set("access", access_token)
+        self._delete("transaction")
+
     def clear(self) -> None:
-        for kind in ("access", "refresh"):
-            failed = False
-            try:
-                with suppress(PasswordDeleteError):
-                    self.backend.delete_password(SERVICE_NAME, self._username(kind))
-            except Exception:
-                failed = True
-            if failed:
-                raise TokenStoreError("keyring could not clear authentication material")
+        for kind in ("access", "refresh", "transaction"):
+            self._delete(kind)

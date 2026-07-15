@@ -64,6 +64,6 @@ def resolve_auth_context(client: IdentityClient) -> AuthContext:
         api_origin=client.api_origin,
         app_id=client.app_id,
         tenant_id=_identity_value(identity, "tenant_id", "tenant_key"),
-        account_id=_identity_value(identity, "account_id", "user_id", "union_id"),
-        actor_id=_identity_value(identity, "actor_id", "open_id", "user_id"),
+        account_id=_identity_value(identity, "union_id"),
+        actor_id=_identity_value(identity, "open_id"),
     )
