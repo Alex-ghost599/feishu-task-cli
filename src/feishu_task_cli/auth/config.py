@@ -13,7 +13,11 @@ from pydantic import SecretStr
 DEFAULT_API_ORIGIN = "https://open.feishu.cn"
 
 
-class UnsafeConfigError(ValueError):
+class ConfigError(ValueError):
+    """Stable invalid-configuration error with no source content."""
+
+
+class UnsafeConfigError(ConfigError):
     """Raised before reading a config file that is not private to this user."""
 
 
@@ -21,8 +25,8 @@ def _read_private_config(path: Path) -> dict[str, object]:
     flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
     try:
         descriptor = os.open(path, flags)
-    except OSError as error:
-        raise UnsafeConfigError("secret config must be a current-user regular file") from error
+    except OSError:
+        raise UnsafeConfigError("secret config must be a current-user regular file") from None
     try:
         metadata = os.fstat(descriptor)
         if not stat.S_ISREG(metadata.st_mode):
@@ -35,13 +39,13 @@ def _read_private_config(path: Path) -> dict[str, object]:
             descriptor = -1
             try:
                 loaded = yaml.safe_load(handle) or {}
-            except yaml.YAMLError:
-                raise ValueError("secret config could not be parsed") from None
+            except (OSError, UnicodeError, yaml.YAMLError):
+                raise ConfigError("secret config could not be read or parsed") from None
     finally:
         if descriptor >= 0:
             os.close(descriptor)
     if not isinstance(loaded, dict) or not all(isinstance(key, str) for key in loaded):
-        raise ValueError("secret config must contain a string-keyed mapping")
+        raise ConfigError("secret config must contain a string-keyed mapping")
     return loaded
 
 
@@ -49,30 +53,38 @@ def _optional_text(value: object, *, field: str) -> str | None:
     if value is None:
         return None
     if not isinstance(value, str) or not value.strip():
-        raise ValueError(f"{field} must be a non-empty string")
+        raise ConfigError(f"{field} must be a non-empty string")
     return value.strip()
 
 
 def _origin(value: object) -> str:
+    message = "FEISHU_API_ORIGIN must be the official Feishu API origin"
     if not isinstance(value, str):
-        raise ValueError("FEISHU_API_ORIGIN must be an HTTPS origin without a path")
-    parsed = urlsplit(value)
+        raise ConfigError(message)
+    try:
+        parsed = urlsplit(value)
+        hostname = parsed.hostname
+        port = parsed.port
+    except ValueError:
+        raise ConfigError(message) from None
     if (
         parsed.scheme != "https"
-        or not parsed.hostname
+        or hostname != "open.feishu.cn"
         or parsed.username is not None
         or parsed.password is not None
-        or parsed.path not in ("", "/")
+        or parsed.path != ""
         or parsed.query
         or parsed.fragment
     ):
-        raise ValueError("FEISHU_API_ORIGIN must be an HTTPS origin without a path")
-    try:
-        port = parsed.port
-    except ValueError as error:
-        raise ValueError("FEISHU_API_ORIGIN must be an HTTPS origin without a path") from error
-    host = parsed.hostname.lower()
-    return f"https://{host}{f':{port}' if port is not None else ''}"
+        raise ConfigError(message)
+    if port is not None:
+        raise ConfigError(message)
+    return DEFAULT_API_ORIGIN
+
+
+def validate_api_origin(value: object) -> str:
+    """Return the one origin to which this Feishu-only project may send credentials."""
+    return _origin(value)
 
 
 @dataclass(frozen=True)
@@ -85,6 +97,21 @@ class Settings:
     account_id: str | None = None
     app_secret: SecretStr | None = None
     user_access_token: SecretStr | None = None
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "api_origin", _origin(self.api_origin))
+        for field_name in ("app_id", "tenant_id", "account_id"):
+            value = getattr(self, field_name)
+            if value is not None:
+                object.__setattr__(
+                    self,
+                    field_name,
+                    _optional_text(value, field=field_name),
+                )
+        for field_name in ("app_secret", "user_access_token"):
+            value = getattr(self, field_name)
+            if value is not None and not isinstance(value, SecretStr):
+                raise ConfigError(f"{field_name} must use a secret wrapper")
 
     @classmethod
     def load(

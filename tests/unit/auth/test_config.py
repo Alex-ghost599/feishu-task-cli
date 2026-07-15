@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 from typer.testing import CliRunner
 
-from feishu_task_cli.auth.config import Settings, UnsafeConfigError
+from feishu_task_cli.auth.config import ConfigError, Settings, UnsafeConfigError
 from feishu_task_cli.cli import app
 
 
@@ -63,7 +63,7 @@ def test_secure_config_and_environment_secrets_are_redacted(tmp_path: Path) -> N
 def test_invalid_environment_value_does_not_appear_in_validation_error() -> None:
     secret = _secret("invalid-origin")
 
-    with pytest.raises(ValueError) as caught:
+    with pytest.raises(ConfigError) as caught:
         Settings.load(environ={"FEISHU_API_ORIGIN": secret})
 
     assert secret not in str(caught.value)
@@ -87,8 +87,51 @@ def test_malformed_private_config_does_not_leak_its_content(tmp_path: Path) -> N
     path.write_text(f"app_secret: [{secret}")
     path.chmod(0o600)
 
-    with pytest.raises(ValueError) as caught:
+    with pytest.raises(ConfigError) as caught:
         Settings.load(config_path=path, environ={})
 
     assert secret not in str(caught.value)
     assert secret not in repr(caught.value)
+
+
+@pytest.mark.parametrize(
+    "origin",
+    [
+        "http://open.feishu.cn",
+        "https://evil.example",
+        "https://user@open.feishu.cn",
+        "https://open.feishu.cn/path",
+        "https://open.feishu.cn/",
+        "https://open.feishu.cn?query=1",
+        "https://open.feishu.cn#fragment",
+        "https://open.feishu.cn:443",
+        "https://[",
+    ],
+)
+def test_settings_constructor_rejects_noncanonical_feishu_origin(origin: str) -> None:
+    with pytest.raises(ConfigError, match="official Feishu API origin"):
+        Settings(api_origin=origin, app_id="cli_synthetic")
+
+
+def test_config_decode_and_field_type_fail_with_typed_safe_error(tmp_path: Path) -> None:
+    path = tmp_path / "auth.yaml"
+    path.write_bytes(b"app_id: \xff\xfe\n")
+    path.chmod(0o600)
+
+    with pytest.raises(ConfigError) as decode_error:
+        Settings.load(config_path=path, environ={})
+    with pytest.raises(ConfigError) as type_error:
+        Settings.load(environ={"FEISHU_APP_ID": 123})  # type: ignore[dict-item]
+
+    assert "\\xff" not in repr(decode_error.value)
+    assert "123" not in repr(type_error.value)
+
+
+def test_config_read_error_does_not_retain_sensitive_cause(tmp_path: Path) -> None:
+    path = tmp_path / _secret("missing-file")
+
+    with pytest.raises(ConfigError) as caught:
+        Settings.load(config_path=path, environ={})
+
+    assert caught.value.__cause__ is None
+    assert path.name not in repr(caught.value)

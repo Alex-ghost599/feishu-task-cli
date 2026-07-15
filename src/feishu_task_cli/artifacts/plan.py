@@ -1,11 +1,10 @@
 from __future__ import annotations
 
-import re
 from datetime import datetime
 from enum import StrEnum
 from typing import Annotated, Any, Literal, Self
 
-from pydantic import Field, field_validator, model_validator
+from pydantic import ConfigDict, Field, field_validator, model_validator
 
 from feishu_task_cli.artifacts.base import (
     ArtifactV1,
@@ -43,6 +42,8 @@ class FindingSeverity(StrEnum):
 
 
 class AuthContext(StrictModel):
+    model_config = ConfigDict(hide_input_in_errors=True)
+
     api_origin: Annotated[
         str,
         Field(pattern=r"^https://[A-Za-z0-9.-]+(?::[0-9]+)?$"),
@@ -69,9 +70,9 @@ class AuthContext(StrictModel):
     @field_validator("api_origin")
     @classmethod
     def validate_api_origin(cls, value: str) -> str:
-        if not re.fullmatch(r"https://[A-Za-z0-9.-]+(?::[0-9]+)?", value):
-            raise ValueError("api_origin must be an HTTPS origin without a path")
-        return value.lower()
+        if value != "https://open.feishu.cn":
+            raise ValueError("api_origin must be the official Feishu API origin")
+        return value
 
     @model_validator(mode="after")
     def validate_display_fingerprints(self) -> AuthContext:

@@ -1,0 +1,8 @@
+{
+  "access_token": "synthetic-access",
+  "expires_in": 7200,
+  "refresh_expires_in": 2592000,
+  "refresh_token": "synthetic-refresh",
+  "scope": "offline_access task:task:read",
+  "token_type": "Bearer"
+}
