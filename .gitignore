@@ -4,6 +4,7 @@
 .ruff_cache/
 .superpowers/
 .venv/
+.worktrees/
 __pycache__/
 *.egg-info/
 *.py[cod]
