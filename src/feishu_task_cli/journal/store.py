@@ -14,8 +14,6 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Any
 
-from platformdirs import user_state_path
-
 from feishu_task_cli import __version__
 from feishu_task_cli.errors import (
     JournalCorruptError,
@@ -23,7 +21,12 @@ from feishu_task_cli.errors import (
     ReplayBlockedError,
     UnknownExecutionError,
 )
-from feishu_task_cli.journal.locking import plan_execution_lock
+from feishu_task_cli.journal.locking import (
+    _fsync_directory,
+    default_journal_root,
+    plan_execution_lock,
+    prepare_private_directory,
+)
 
 HASH_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 RECORD_KEYS = {
@@ -42,7 +45,6 @@ class ExecutionState(StrEnum):
     VERIFIED = "verified"
     PARTIAL = "partial"
     FAILED = "failed"
-    REJECTED = "rejected"
 
 
 @dataclass(frozen=True)
@@ -119,22 +121,12 @@ class ExecutionAttempt:
 
 class ExecutionJournal:
     def __init__(self, root: Path | None = None) -> None:
-        self.root = root or user_state_path("feishu-task-cli") / "executions"
+        self.root = root or default_journal_root()
         self.records_path = self.root / "records"
         self.locks_path = self.root / "locks"
-        self._prepare_directory(self.root)
-        self._prepare_directory(self.records_path)
-        self._prepare_directory(self.locks_path)
-
-    @staticmethod
-    def _prepare_directory(path: Path) -> None:
-        path.mkdir(mode=0o700, parents=True, exist_ok=True)
-        details = path.stat()
-        mode = stat.S_IMODE(details.st_mode)
-        if hasattr(os, "getuid") and details.st_uid != os.getuid():
-            raise JournalPermissionError("journal directory must be owned by the current user")
-        if mode & 0o077:
-            raise JournalPermissionError("journal directory permissions must be 0700 or stricter")
+        prepare_private_directory(self.root)
+        prepare_private_directory(self.records_path)
+        prepare_private_directory(self.locks_path)
 
     @staticmethod
     def _validate_hash(plan_hash: str) -> None:
@@ -147,15 +139,27 @@ class ExecutionJournal:
 
     def status(self, plan_hash: str) -> JournalRecord | None:
         path = self._record_path(plan_hash)
-        if not path.exists():
+        if not path.exists() and not path.is_symlink():
             return None
-        details = path.stat()
-        if hasattr(os, "getuid") and details.st_uid != os.getuid():
-            raise JournalPermissionError("journal record must be owned by the current user")
-        if stat.S_IMODE(details.st_mode) & 0o077:
-            raise JournalPermissionError("journal record permissions must be 0600 or stricter")
         try:
-            payload: Any = json.loads(path.read_text(encoding="utf-8"))
+            descriptor = os.open(
+                path,
+                os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0),
+            )
+        except OSError as error:
+            raise JournalPermissionError("journal record cannot be safely opened") from error
+        try:
+            details = os.fstat(descriptor)
+            if not stat.S_ISREG(details.st_mode):
+                raise JournalPermissionError("journal record must be a private regular file")
+            if hasattr(os, "getuid") and details.st_uid != os.getuid():
+                raise JournalPermissionError("journal record must be owned by the current user")
+            if stat.S_IMODE(details.st_mode) & 0o077:
+                raise JournalPermissionError("journal record permissions must be 0600 or stricter")
+            content = os.read(descriptor, 16_385)
+            if len(content) > 16_384:
+                raise JournalCorruptError("execution journal record is corrupt")
+            payload: Any = json.loads(content.decode("utf-8"))
             if not isinstance(payload, dict) or set(payload) != RECORD_KEYS:
                 raise ValueError("record fields do not match the journal contract")
             if payload["plan_hash"] != plan_hash:
@@ -186,6 +190,8 @@ class ExecutionJournal:
             ValueError,
         ) as error:
             raise JournalCorruptError("execution journal record is corrupt") from error
+        finally:
+            os.close(descriptor)
 
     def _write(self, record: JournalRecord) -> None:
         path = self._record_path(record.plan_hash)
@@ -200,11 +206,7 @@ class ExecutionJournal:
                 handle.flush()
                 os.fsync(handle.fileno())
             os.replace(temporary, path)
-            directory = os.open(self.records_path, os.O_RDONLY)
-            try:
-                os.fsync(directory)
-            finally:
-                os.close(directory)
+            _fsync_directory(self.records_path)
         except BaseException:
             with suppress(FileNotFoundError):
                 os.unlink(temporary)
@@ -213,8 +215,7 @@ class ExecutionJournal:
     @contextmanager
     def execution(self, plan_hash: str) -> Iterator[ExecutionAttempt]:
         self._validate_hash(plan_hash)
-        lock_path = self.locks_path / f"{plan_hash}.lock"
-        with plan_execution_lock(lock_path):
+        with plan_execution_lock(plan_hash, root=self.root):
             existing = self.status(plan_hash)
             if existing is not None:
                 if existing.state is ExecutionState.STARTED:

@@ -12,6 +12,9 @@ from feishu_task_cli.errors import (
     ReplayBlockedError,
     UnknownExecutionError,
 )
+from feishu_task_cli.journal import locking
+from feishu_task_cli.journal import store as journal_store
+from feishu_task_cli.journal.locking import plan_execution_lock
 from feishu_task_cli.journal.store import ExecutionJournal, ExecutionState
 
 PLAN_HASH = "a" * 64
@@ -90,6 +93,70 @@ def test_unsafe_state_directory_permissions_are_rejected(tmp_path: Path) -> None
         ExecutionJournal(root)
 
 
+def test_symlinked_journal_directory_is_rejected(tmp_path: Path) -> None:
+    target = tmp_path / "target"
+    target.mkdir(mode=0o700)
+    root = tmp_path / "journal-link"
+    root.symlink_to(target, target_is_directory=True)
+
+    with pytest.raises(JournalPermissionError, match="symlink"):
+        ExecutionJournal(root)
+
+
+@pytest.mark.parametrize("component", ["records", "locks"])
+def test_symlinked_journal_component_is_rejected(tmp_path: Path, component: str) -> None:
+    root = tmp_path / "journal"
+    root.mkdir(mode=0o700)
+    target = tmp_path / f"{component}-target"
+    target.mkdir(mode=0o700)
+    (root / component).symlink_to(target, target_is_directory=True)
+
+    with pytest.raises(JournalPermissionError, match="symlink"):
+        ExecutionJournal(root)
+
+
+def test_symlinked_journal_ancestor_is_rejected(tmp_path: Path) -> None:
+    target = tmp_path / "ancestor-target"
+    target.mkdir(mode=0o700)
+    link = tmp_path / "ancestor-link"
+    link.symlink_to(target, target_is_directory=True)
+
+    with pytest.raises(JournalPermissionError, match="symlink"):
+        ExecutionJournal(link / "journal")
+
+
+def test_symlinked_record_is_rejected(journal: ExecutionJournal, tmp_path: Path) -> None:
+    with journal.execution(PLAN_HASH) as attempt:
+        attempt.complete(ExecutionState.VERIFIED)
+    record = journal.records_path / f"{PLAN_HASH}.json"
+    external = tmp_path / "external-record.json"
+    record.replace(external)
+    record.symlink_to(external)
+
+    with pytest.raises(JournalPermissionError, match="record"):
+        journal.status(PLAN_HASH)
+
+
+def test_record_read_uses_no_follow_file_descriptor(
+    journal: ExecutionJournal, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    with journal.execution(PLAN_HASH) as attempt:
+        attempt.complete(ExecutionState.VERIFIED)
+    record = journal.records_path / f"{PLAN_HASH}.json"
+    opened_flags: list[int] = []
+    real_open = journal_store.os.open
+
+    def recording_open(path: object, flags: int, *args: object, **kwargs: object) -> int:
+        if Path(path) == record:
+            opened_flags.append(flags)
+        return real_open(path, flags, *args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(journal_store.os, "open", recording_open)
+    assert journal.status(PLAN_HASH).state is ExecutionState.VERIFIED  # type: ignore[union-attr]
+    assert opened_flags
+    assert opened_flags[0] & getattr(journal_store.os, "O_NOFOLLOW", 0)
+
+
 def test_attempt_can_only_complete_once(journal: ExecutionJournal) -> None:
     with journal.execution(PLAN_HASH) as attempt:
         attempt.complete(ExecutionState.FAILED)
@@ -129,3 +196,59 @@ def test_escaped_attempt_cannot_overwrite_unknown_after_scope_exit(
     with pytest.raises(ReplayBlockedError, match="active lock scope"):
         escaped.complete(ExecutionState.VERIFIED)
     assert journal.status(PLAN_HASH).state is ExecutionState.UNKNOWN  # type: ignore[union-attr]
+
+
+def test_public_lock_accepts_plan_hash_and_rejects_path_input(tmp_path: Path) -> None:
+    with plan_execution_lock(PLAN_HASH, root=tmp_path):
+        pass
+    with (
+        pytest.raises(ValueError, match="plan_hash"),
+        plan_execution_lock("../../outside", root=tmp_path),
+    ):
+        pass
+
+
+def test_new_journal_directories_are_fsynced_with_their_parents(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "new-journal"
+    synced: list[Path] = []
+    monkeypatch.setattr(locking, "_fsync_directory", synced.append, raising=False)
+
+    ExecutionJournal(root)
+
+    assert root in synced
+    assert root.parent in synced
+    assert root / "records" in synced
+    assert root / "locks" in synced
+
+
+def test_failed_directory_fsync_is_retried_before_later_claim(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "journal"
+    failing_path = root / "locks"
+    calls = 0
+
+    def fail_root_fsync(path: Path) -> None:
+        nonlocal calls
+        if path == failing_path:
+            calls += 1
+            raise OSError("synthetic fsync failure")
+
+    monkeypatch.setattr(locking, "_fsync_directory", fail_root_fsync)
+    with pytest.raises(OSError, match="synthetic fsync failure"):
+        ExecutionJournal(root)
+    with pytest.raises(OSError, match="synthetic fsync failure"):
+        ExecutionJournal(root)
+    assert calls == 2
+
+
+def test_journal_states_only_include_post_claim_outcomes() -> None:
+    assert set(ExecutionState) == {
+        ExecutionState.STARTED,
+        ExecutionState.UNKNOWN,
+        ExecutionState.VERIFIED,
+        ExecutionState.PARTIAL,
+        ExecutionState.FAILED,
+    }
