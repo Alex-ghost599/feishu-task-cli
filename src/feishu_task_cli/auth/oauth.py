@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import secrets
+import socket
 import time
 import webbrowser
 from collections.abc import Callable, Iterable, Mapping
@@ -52,6 +53,7 @@ class OAuthClient:
         store: TokenStore,
         http_client: httpx.Client | None = None,
         browser_open: Callable[[str], bool] = webbrowser.open,
+        authorization_url_output: Callable[[str], None] = lambda url: None,
     ) -> None:
         if settings.app_id is None:
             raise ValueError("FEISHU_APP_ID is required for OAuth")
@@ -63,6 +65,7 @@ class OAuthClient:
         self.store = store
         self._http = http_client or httpx.Client(timeout=10)
         self._browser_open = browser_open
+        self._authorization_url_output = authorization_url_output
 
     @property
     def api_origin(self) -> str:
@@ -102,6 +105,7 @@ class OAuthClient:
         state: str,
         scopes: Iterable[str],
     ) -> str:
+        self._require_configured_redirect_uri(redirect_uri)
         validated_scopes = self._scopes(scopes)
         query = urlencode(
             {
@@ -113,10 +117,27 @@ class OAuthClient:
         )
         return f"{AUTHORIZE_ENDPOINT}?{query}"
 
-    def login(self, *, scopes: Iterable[str] = (), timeout: float = 120) -> None:
+    def _require_configured_redirect_uri(self, redirect_uri: str) -> None:
+        if redirect_uri != self.settings.oauth_redirect_uri:
+            raise OAuthError("redirect URI does not match configured OAuth redirect URI")
+
+    def login(
+        self,
+        *,
+        scopes: Iterable[str] = (),
+        timeout: float = 120,
+        open_browser: bool = True,
+    ) -> None:
         """Run one explicit browser login with a loopback-only callback."""
         self._require_app_secret()
         validated_scopes = self._scopes(scopes)
+        redirect_uri = self.settings.oauth_redirect_uri
+        self._require_configured_redirect_uri(redirect_uri)
+        parsed_redirect = urlsplit(redirect_uri)
+        host = parsed_redirect.hostname
+        port = parsed_redirect.port
+        assert host in {"127.0.0.1", "::1"}
+        assert port is not None
         state = secrets.token_urlsafe(32)
         callback: dict[str, str] = {}
 
@@ -146,18 +167,33 @@ class OAuthClient:
             def log_message(self, format: str, *args: object) -> None:
                 return
 
-        server = HTTPServer(("127.0.0.1", 0), CallbackHandler)
-        redirect_uri = f"http://127.0.0.1:{server.server_port}/callback"
+        server_type = HTTPServer
+        if host == "::1":
+
+            class IPv6HTTPServer(HTTPServer):
+                address_family = socket.AF_INET6
+
+            server_type = IPv6HTTPServer
+        server: HTTPServer | None = None
+        bind_failed = False
+        try:
+            server = server_type((host, port), CallbackHandler)
+        except OSError:
+            bind_failed = True
+        if bind_failed or server is None:
+            raise OAuthError("OAuth callback listener could not bind configured loopback URI")
         deadline = time.monotonic() + timeout
         try:
-            if not self._browser_open(
-                self.authorization_url(
-                    redirect_uri=redirect_uri,
-                    state=state,
-                    scopes=validated_scopes,
-                )
-            ):
-                raise OAuthError("browser could not be opened for explicit OAuth setup")
+            authorization_url = self.authorization_url(
+                redirect_uri=redirect_uri,
+                state=state,
+                scopes=validated_scopes,
+            )
+            if open_browser:
+                if not self._browser_open(authorization_url):
+                    raise OAuthError("browser could not be opened for explicit OAuth setup")
+            else:
+                self._authorization_url_output(authorization_url)
             while "code" not in callback and "denied" not in callback:
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
@@ -220,6 +256,7 @@ class OAuthClient:
             raise OAuthError("OAuth tokens could not be persisted safely")
 
     def exchange_code(self, *, code: str, redirect_uri: str) -> None:
+        self._require_configured_redirect_uri(redirect_uri)
         if not code:
             raise ValueError("authorization code must be non-empty")
         oauth_credential = self._require_app_secret()
