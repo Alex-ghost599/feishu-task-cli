@@ -235,10 +235,11 @@ def _open_output_parent(path: Path) -> int:
     parent = path.parent
     flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
     descriptor = os.open(parent.anchor, flags)
+    owned = {descriptor}
     try:
         for component in parent.parts[1:]:
             next_descriptor = os.open(component, flags, dir_fd=descriptor)
-            os.close(descriptor)
+            owned.add(next_descriptor)
             descriptor = next_descriptor
         details = os.fstat(descriptor)
         if not stat.S_ISDIR(details.st_mode):
@@ -247,17 +248,52 @@ def _open_output_parent(path: Path) -> int:
             raise ValueError("output parent must be owned by the current user")
         if stat.S_IMODE(details.st_mode) & 0o022:
             raise ValueError("output parent must not be writable by other users")
+        for ancestor in tuple(owned):
+            if ancestor != descriptor:
+                _close_owned(owned, ancestor)
+        owned.remove(descriptor)
         return descriptor
     except BaseException:
-        os.close(descriptor)
+        _best_effort_close_all(owned)
         raise
+
+
+def _close_owned(owned: set[int], descriptor: int) -> None:
+    """Transfer one descriptor out of cleanup ownership before its one close attempt."""
+    owned.remove(descriptor)
+    os.close(descriptor)
+
+
+def _best_effort_close_all(owned: set[int]) -> None:
+    for descriptor in tuple(owned):
+        _best_effort_close_owned(owned, descriptor)
+
+
+def _best_effort_close_owned(owned: set[int], descriptor: int) -> None:
+    if descriptor not in owned:
+        return
+    owned.remove(descriptor)
+    with suppress(OSError):
+        os.close(descriptor)
+
+
+def _write_all(descriptor: int, content: bytes) -> None:
+    remaining = memoryview(content)
+    while remaining:
+        written = os.write(descriptor, remaining)
+        if written <= 0:
+            raise OSError("atomic output write made no progress")
+        remaining = remaining[written:]
 
 
 def _write_atomic(path: Path, content: bytes) -> None:
     path = path.expanduser().absolute()
     parent_fd = _open_output_parent(path)
     temporary_name = f".{path.name}.{uuid.uuid4().hex}.tmp"
+    owned = {parent_fd}
     temporary_fd: int | None = None
+    primary: BaseException | None = None
+    primary_traceback = None
     try:
         try:
             existing = os.stat(path.name, dir_fd=parent_fd, follow_symlinks=False)
@@ -274,11 +310,10 @@ def _write_atomic(path: Path, content: bytes) -> None:
             0o600,
             dir_fd=parent_fd,
         )
-        with os.fdopen(temporary_fd, "wb", closefd=True) as handle:
-            temporary_fd = None
-            handle.write(content)
-            handle.flush()
-            os.fsync(handle.fileno())
+        owned.add(temporary_fd)
+        _write_all(temporary_fd, content)
+        os.fsync(temporary_fd)
+        _close_owned(owned, temporary_fd)
         os.replace(
             temporary_name,
             path.name,
@@ -287,12 +322,19 @@ def _write_atomic(path: Path, content: bytes) -> None:
         )
         os.chmod(path.name, 0o600, dir_fd=parent_fd, follow_symlinks=False)
         os.fsync(parent_fd)
-    finally:
-        if temporary_fd is not None:
-            os.close(temporary_fd)
-        with suppress(FileNotFoundError):
-            os.unlink(temporary_name, dir_fd=parent_fd)
-        os.close(parent_fd)
+    except BaseException as error:
+        primary = error
+        primary_traceback = error.__traceback__
+
+    if temporary_fd is not None:
+        _best_effort_close_owned(owned, temporary_fd)
+    with suppress(OSError):
+        os.unlink(temporary_name, dir_fd=parent_fd)
+    _best_effort_close_owned(owned, parent_fd)
+    _best_effort_close_all(owned)
+
+    if primary is not None:
+        raise primary.with_traceback(primary_traceback)
 
 
 def _artifact_envelope(artifact: BaseModel, path: Path) -> dict[str, object]:
@@ -619,10 +661,12 @@ def execute_command(
     try:
         plan = PlanV1.model_validate_json(_read_text(plan_path))
         review = ReviewV1.model_validate_json(_read_text(review_path))
-        receipt = _runtime(config, journal_dir).executor.execute(
+        policy = _policy(policy_path)
+        runtime = _runtime(config, journal_dir)
+        receipt = runtime.executor.execute(
             plan,
             review,
-            _policy(policy_path),
+            policy,
             executor_id,
         )
         _emit_artifact(receipt, output, "created execution receipt")

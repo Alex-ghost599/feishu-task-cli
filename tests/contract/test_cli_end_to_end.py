@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import stat
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -265,6 +266,68 @@ def test_file_output_is_private_and_rejects_symlink(
     )
     assert shared_rejected.exit_code == 2
     assert not (shared_parent / "artifact.json").exists()
+
+
+def test_output_cleanup_failure_keeps_primary_safe_envelope_and_no_residue(
+    runtime: SimpleNamespace,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    del runtime
+    output = tmp_path / "artifact.json"
+    real_open = os.open
+    real_close = os.close
+    real_unlink = os.unlink
+    parent_fd = real_open(tmp_path, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+    opened = [parent_fd]
+    close_attempts: list[int] = []
+
+    def tracked_open(*args: object, **kwargs: object) -> int:
+        descriptor = real_open(*args, **kwargs)  # type: ignore[arg-type]
+        opened.append(descriptor)
+        return descriptor
+
+    def close_then_fail(descriptor: int) -> None:
+        close_attempts.append(descriptor)
+        real_close(descriptor)
+        raise OSError("sensitive secondary close detail")
+
+    def unlink_then_fail(path: str, *, dir_fd: int | None = None) -> None:
+        real_unlink(path, dir_fd=dir_fd)
+        raise OSError("sensitive secondary unlink detail")
+
+    monkeypatch.setattr(cli, "_open_output_parent", lambda path: parent_fd)
+    monkeypatch.setattr(cli.os, "open", tracked_open)
+    monkeypatch.setattr(cli.os, "close", close_then_fail)
+    monkeypatch.setattr(cli.os, "unlink", unlink_then_fail)
+    monkeypatch.setattr(
+        cli.os,
+        "fsync",
+        lambda descriptor: (_ for _ in ()).throw(OSError("sensitive primary path detail")),
+    )
+
+    result = runner.invoke(
+        cli.app,
+        [
+            "plan",
+            "create",
+            "--tasklist-guid",
+            "tasklist_synthetic",
+            "--summary",
+            "Synthetic",
+            "--output",
+            str(output),
+        ],
+    )
+
+    assert result.exit_code == 2
+    assert json.loads(result.stdout)["error"]["code"] == "invalid_input"
+    assert str(output) not in result.stdout + result.stderr
+    assert "sensitive" not in result.stdout + result.stderr
+    assert sorted(opened) == sorted(close_attempts)
+    assert len(close_attempts) == len(set(close_attempts))
+    assert not output.exists()
+    assert not list(tmp_path.glob(".*.tmp"))
 
 
 def test_auth_and_execution_status_commands_are_json_and_non_prompting(
@@ -538,10 +601,11 @@ def test_production_runtime_assembly_is_lazy_and_uses_explicit_identity() -> Non
     assert runtime.executor is runtime.executor
 
 
-def test_execute_malformed_yaml_policy_is_invalid_input(
-    runtime: SimpleNamespace, tmp_path: Path
+def test_execute_malformed_yaml_policy_precedes_production_runtime_assembly(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    plan = runtime.planner.create(
+    gateway = FakeGateway()
+    plan = Planner(gateway, AUTH).create(
         requested_fields={"summary": "Synthetic"},
         tasklist_guid="tasklist_synthetic",
     )
@@ -552,6 +616,41 @@ def test_execute_malformed_yaml_policy_is_invalid_input(
     plan_path.write_text(plan.model_dump_json(), encoding="utf-8")
     review_path.write_text(review.model_dump_json(), encoding="utf-8")
     policy_path.write_text("rules: [unterminated", encoding="utf-8")
+
+    counters = {"factory": 0, "refresh": 0, "identity_network": 0}
+
+    class LazyOAuth:
+        api_origin = "https://open.feishu.cn"
+        app_id = "app_synthetic"
+        token: str | None = None
+
+        def access_token(self) -> str | None:
+            return self.token
+
+        def refresh(self) -> None:
+            counters["refresh"] += 1
+            self.token = "synthetic-refreshed-token"
+
+        def get_identity(self) -> dict[str, str]:
+            counters["identity_network"] += 1
+            return {
+                "tenant_id": "tenant_synthetic",
+                "union_id": "union_synthetic",
+                "open_id": "ou_synthetic",
+            }
+
+    production_runtime = cli.Runtime(
+        settings=Settings(app_id="app_synthetic", account_id="union_synthetic"),
+        oauth=LazyOAuth(),  # type: ignore[arg-type]
+        journal_path=tmp_path / "journal",
+    )
+
+    def counted_factory(**kwargs: object) -> cli.Runtime:
+        del kwargs
+        counters["factory"] += 1
+        return production_runtime
+
+    monkeypatch.setattr(cli, "runtime_factory", counted_factory)
 
     result = runner.invoke(
         cli.app,
@@ -565,10 +664,14 @@ def test_execute_malformed_yaml_policy_is_invalid_input(
             str(policy_path),
             "--executor-id",
             "executor-synthetic",
+            "--journal-dir",
+            str(tmp_path / "journal"),
         ],
     )
 
     assert result.exit_code == 2
     assert json.loads(result.stdout)["error"]["code"] == "invalid_input"
     assert json.loads(result.stdout)["error"]["next_action"] == "fix_invalid_input"
-    assert runtime.gateway.mutations == 0
+    assert counters == {"factory": 0, "refresh": 0, "identity_network": 0}
+    assert gateway.mutations == 0
+    assert not (tmp_path / "journal").exists()
