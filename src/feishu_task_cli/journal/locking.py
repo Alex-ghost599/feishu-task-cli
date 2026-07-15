@@ -4,7 +4,7 @@ import os
 import re
 import stat
 from collections.abc import Iterator
-from contextlib import contextmanager, suppress
+from contextlib import contextmanager
 from pathlib import Path
 
 from filelock import FileLock, Timeout
@@ -19,9 +19,34 @@ def default_journal_root() -> Path:
     return user_state_path("feishu-task-cli") / "executions"
 
 
-def _prepare_private_directory(path: Path) -> None:
-    with suppress(OSError):
-        path.mkdir(mode=0o700, parents=True, exist_ok=True)
+def _fsync_directory(path: Path) -> None:
+    if os.name == "nt":
+        return
+    descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def prepare_private_directory(path: Path) -> None:
+    """Create a private directory and durably persist each new directory entry."""
+    missing: list[Path] = []
+    cursor = path
+    while not cursor.exists() and not cursor.is_symlink():
+        missing.append(cursor)
+        if cursor.parent == cursor:
+            break
+        cursor = cursor.parent
+    for directory in reversed(missing):
+        try:
+            directory.mkdir(mode=0o700)
+        except FileExistsError:
+            pass
+        except OSError as error:
+            raise JournalPermissionError("journal directory cannot be created") from error
+        _fsync_directory(directory)
+        _fsync_directory(directory.parent)
     try:
         details = path.lstat()
     except OSError as error:
@@ -42,9 +67,9 @@ def plan_execution_lock(plan_hash: str, *, root: Path | None = None) -> Iterator
     if HASH_PATTERN.fullmatch(plan_hash) is None:
         raise ValueError("plan_hash must be 64 lowercase hexadecimal characters")
     journal_root = root or default_journal_root()
-    _prepare_private_directory(journal_root)
+    prepare_private_directory(journal_root)
     locks_path = journal_root / "locks"
-    _prepare_private_directory(locks_path)
+    prepare_private_directory(locks_path)
     lock = FileLock(locks_path / f"{plan_hash}.lock", timeout=0, mode=0o600)
     try:
         lock.acquire()

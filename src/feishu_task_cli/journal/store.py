@@ -21,7 +21,11 @@ from feishu_task_cli.errors import (
     ReplayBlockedError,
     UnknownExecutionError,
 )
-from feishu_task_cli.journal.locking import default_journal_root, plan_execution_lock
+from feishu_task_cli.journal.locking import (
+    default_journal_root,
+    plan_execution_lock,
+    prepare_private_directory,
+)
 
 HASH_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 RECORD_KEYS = {
@@ -40,7 +44,6 @@ class ExecutionState(StrEnum):
     VERIFIED = "verified"
     PARTIAL = "partial"
     FAILED = "failed"
-    REJECTED = "rejected"
 
 
 @dataclass(frozen=True)
@@ -120,27 +123,9 @@ class ExecutionJournal:
         self.root = root or default_journal_root()
         self.records_path = self.root / "records"
         self.locks_path = self.root / "locks"
-        self._prepare_directory(self.root)
-        self._prepare_directory(self.records_path)
-        self._prepare_directory(self.locks_path)
-
-    @staticmethod
-    def _prepare_directory(path: Path) -> None:
-        with suppress(OSError):
-            path.mkdir(mode=0o700, parents=True, exist_ok=True)
-        try:
-            details = path.lstat()
-        except OSError as error:
-            raise JournalPermissionError(
-                "journal directory cannot be created or inspected"
-            ) from error
-        if stat.S_ISLNK(details.st_mode) or not stat.S_ISDIR(details.st_mode):
-            raise JournalPermissionError("journal path must be a private directory")
-        mode = stat.S_IMODE(details.st_mode)
-        if hasattr(os, "getuid") and details.st_uid != os.getuid():
-            raise JournalPermissionError("journal directory must be owned by the current user")
-        if mode & 0o077:
-            raise JournalPermissionError("journal directory permissions must be 0700 or stricter")
+        prepare_private_directory(self.root)
+        prepare_private_directory(self.records_path)
+        prepare_private_directory(self.locks_path)
 
     @staticmethod
     def _validate_hash(plan_hash: str) -> None:

@@ -12,6 +12,7 @@ from feishu_task_cli.errors import (
     ReplayBlockedError,
     UnknownExecutionError,
 )
+from feishu_task_cli.journal import locking
 from feishu_task_cli.journal.locking import plan_execution_lock
 from feishu_task_cli.journal.store import ExecutionJournal, ExecutionState
 
@@ -162,3 +163,28 @@ def test_public_lock_accepts_plan_hash_and_rejects_path_input(tmp_path: Path) ->
         plan_execution_lock("../../outside", root=tmp_path),
     ):
         pass
+
+
+def test_new_journal_directories_are_fsynced_with_their_parents(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "new-journal"
+    synced: list[Path] = []
+    monkeypatch.setattr(locking, "_fsync_directory", synced.append, raising=False)
+
+    ExecutionJournal(root)
+
+    assert root in synced
+    assert root.parent in synced
+    assert root / "records" in synced
+    assert root / "locks" in synced
+
+
+def test_journal_states_only_include_post_claim_outcomes() -> None:
+    assert set(ExecutionState) == {
+        ExecutionState.STARTED,
+        ExecutionState.UNKNOWN,
+        ExecutionState.VERIFIED,
+        ExecutionState.PARTIAL,
+        ExecutionState.FAILED,
+    }
