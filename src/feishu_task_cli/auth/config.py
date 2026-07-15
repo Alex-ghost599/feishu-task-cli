@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 import stat
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -11,6 +12,7 @@ import yaml
 from pydantic import SecretStr
 
 DEFAULT_API_ORIGIN = "https://open.feishu.cn"
+DEFAULT_OAUTH_SCOPES = ("offline_access", "task:task:write")
 
 
 class UnsafeConfigError(ValueError):
@@ -18,6 +20,7 @@ class UnsafeConfigError(ValueError):
 
 
 def _read_private_config(path: Path) -> dict[str, object]:
+    parse_failed = False
     flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
     try:
         descriptor = os.open(path, flags)
@@ -36,10 +39,13 @@ def _read_private_config(path: Path) -> dict[str, object]:
             try:
                 loaded = yaml.safe_load(handle) or {}
             except yaml.YAMLError:
-                raise ValueError("secret config could not be parsed") from None
+                parse_failed = True
+                loaded = None
     finally:
         if descriptor >= 0:
             os.close(descriptor)
+    if parse_failed:
+        raise ValueError("secret config could not be parsed")
     if not isinstance(loaded, dict) or not all(isinstance(key, str) for key in loaded):
         raise ValueError("secret config must contain a string-keyed mapping")
     return loaded
@@ -67,12 +73,52 @@ def _origin(value: object) -> str:
         or parsed.fragment
     ):
         raise ValueError("FEISHU_API_ORIGIN must be an HTTPS origin without a path")
+    invalid_port = False
     try:
         port = parsed.port
-    except ValueError as error:
-        raise ValueError("FEISHU_API_ORIGIN must be an HTTPS origin without a path") from error
+    except ValueError:
+        invalid_port = True
+        port = None
+    if invalid_port:
+        raise ValueError("FEISHU_API_ORIGIN must be an HTTPS origin without a path")
     host = parsed.hostname.lower()
     return f"https://{host}{f':{port}' if port is not None else ''}"
+
+
+def _redirect_uri(value: object) -> str | None:
+    text = _optional_text(value, field="oauth_redirect_uri")
+    if text is None:
+        return None
+    parsed = urlsplit(text)
+    try:
+        port = parsed.port
+    except ValueError:
+        port = None
+    if (
+        parsed.scheme != "http"
+        or parsed.hostname != "127.0.0.1"
+        or port is None
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.path in ("", "/")
+        or parsed.query
+        or parsed.fragment
+    ):
+        raise ValueError(
+            "FEISHU_OAUTH_REDIRECT_URI must be an exact http://127.0.0.1:<port>/<path> URL"
+        )
+    return f"http://127.0.0.1:{port}{parsed.path}"
+
+
+def _scopes(value: object) -> tuple[str, ...]:
+    text = _optional_text(value, field="oauth_scopes")
+    requested = set(DEFAULT_OAUTH_SCOPES if text is None else text.split())
+    requested.add("offline_access")
+    if len(requested) > 50 or any(
+        not re.fullmatch(r"[A-Za-z0-9._:-]+", scope) for scope in requested
+    ):
+        raise ValueError("FEISHU_OAUTH_SCOPES must contain at most 50 valid scope names")
+    return tuple(sorted(requested))
 
 
 @dataclass(frozen=True)
@@ -83,6 +129,8 @@ class Settings:
     app_id: str | None = None
     tenant_id: str | None = None
     account_id: str | None = None
+    oauth_redirect_uri: str | None = None
+    oauth_scopes: tuple[str, ...] = DEFAULT_OAUTH_SCOPES
     app_secret: SecretStr | None = None
     user_access_token: SecretStr | None = None
 
@@ -112,6 +160,10 @@ class Settings:
             account_id=_optional_text(
                 selected("FEISHU_ACCOUNT_ID", "account_id"), field="account_id"
             ),
+            oauth_redirect_uri=_redirect_uri(
+                selected("FEISHU_OAUTH_REDIRECT_URI", "oauth_redirect_uri")
+            ),
+            oauth_scopes=_scopes(selected("FEISHU_OAUTH_SCOPES", "oauth_scopes")),
             app_secret=SecretStr(app_secret) if app_secret is not None else None,
             user_access_token=(
                 SecretStr(user_access_token) if user_access_token is not None else None

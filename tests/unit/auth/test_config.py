@@ -70,6 +70,45 @@ def test_invalid_environment_value_does_not_appear_in_validation_error() -> None
     assert secret not in repr(caught.value)
 
 
+def test_invalid_origin_port_is_not_retained_as_exception_cause() -> None:
+    with pytest.raises(ValueError) as caught:
+        Settings.load(environ={"FEISHU_API_ORIGIN": "https://example.test:private-value"})
+
+    assert caught.value.__cause__ is None
+    assert caught.value.__context__ is None
+
+
+@pytest.mark.parametrize(
+    "redirect_uri",
+    [
+        "http://127.0.0.1/callback",
+        "http://localhost:8765/callback",
+        "https://127.0.0.1:8765/callback",
+        "http://127.0.0.1:8765/",
+        "http://127.0.0.1:8765/callback?unsafe=1",
+    ],
+)
+def test_oauth_redirect_uri_must_be_fixed_exact_loopback(redirect_uri: str) -> None:
+    with pytest.raises(ValueError, match="FEISHU_OAUTH_REDIRECT_URI"):
+        Settings.load(environ={"FEISHU_OAUTH_REDIRECT_URI": redirect_uri})
+
+
+def test_oauth_redirect_uri_and_scopes_load_explicitly() -> None:
+    settings = Settings.load(
+        environ={
+            "FEISHU_OAUTH_REDIRECT_URI": "http://127.0.0.1:8765/callback",
+            "FEISHU_OAUTH_SCOPES": "task:task:read offline_access task:task:write",
+        }
+    )
+
+    assert settings.oauth_redirect_uri == "http://127.0.0.1:8765/callback"
+    assert settings.oauth_scopes == (
+        "offline_access",
+        "task:task:read",
+        "task:task:write",
+    )
+
+
 def test_secret_config_must_be_a_regular_file(tmp_path: Path) -> None:
     target = tmp_path / "target.json"
     target.write_text("{}")
@@ -92,3 +131,5 @@ def test_malformed_private_config_does_not_leak_its_content(tmp_path: Path) -> N
 
     assert secret not in str(caught.value)
     assert secret not in repr(caught.value)
+    assert caught.value.__cause__ is None
+    assert caught.value.__context__ is None
