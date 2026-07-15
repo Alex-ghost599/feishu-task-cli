@@ -352,6 +352,28 @@ def test_precondition_drift_fails_before_journal_or_mutation(tmp_path: Path) -> 
     assert ExecutionJournal(tmp_path / "journal").status(plan.plan_hash) is None
 
 
+def test_whitespace_only_precondition_drift_is_detected(tmp_path: Path) -> None:
+    before = TaskSnapshot(
+        guid="task_synthetic",
+        fields={"summary": "  Padded summary  "},
+    )
+    plan = existing_plan(before)
+    gateway = StubGateway(
+        [TaskSnapshot(guid="task_synthetic", fields={"summary": "Padded summary"})]
+    )
+
+    with pytest.raises(PreconditionChangedError):
+        executor(gateway, tmp_path / "journal").execute(
+            plan,
+            approved(plan),
+            build_neutral_policy(created_at=NOW),
+            "agent-executor",
+        )
+
+    assert gateway.mutations == 0
+    assert ExecutionJournal(tmp_path / "journal").status(plan.plan_hash) is None
+
+
 def test_changed_review_is_rejected_before_auth_resolution(tmp_path: Path) -> None:
     plan = create_plan()
     review = approved(plan).model_copy(update={"plan_hash": "f" * 64})

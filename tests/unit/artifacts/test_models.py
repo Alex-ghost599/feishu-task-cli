@@ -216,6 +216,22 @@ def test_plan_binds_observed_before_to_precondition_fingerprint() -> None:
         existing_task_plan(precondition_fingerprint="6" * 64)
 
 
+def test_plan_preserves_business_state_string_whitespace() -> None:
+    observed = {
+        "guid": "task_example",
+        "summary": "  Padded summary  ",
+        "description": "\n  indented description\n",
+    }
+    fingerprint = hashlib.sha256(canonical_bytes(observed)).hexdigest()
+
+    created = existing_task_plan(
+        observed_before=observed,
+        precondition_fingerprint=fingerprint,
+    )
+
+    assert created.observed_before == observed
+
+
 def test_supplied_hash_must_match_and_use_sha256_shape() -> None:
     payload = plan(auth_context()).model_dump(mode="json")
     payload["plan_hash"] = "not-a-sha256"

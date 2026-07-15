@@ -229,3 +229,26 @@ def test_existing_task_plans_bind_observed_state_and_precondition(method: str) -
         AssigneeIdentifierType.USER_ID if method == "assign" else AssigneeIdentifierType.OPEN_ID
     )
     assert gateway.identifier_types == [expected_type]
+
+
+@pytest.mark.parametrize("method", ["update", "assign", "complete"])
+def test_existing_task_plans_preserve_padded_business_state(method: str) -> None:
+    before = TaskSnapshot(
+        guid="task_synthetic",
+        fields={
+            "summary": "  Padded summary  ",
+            "description": "\n  indented description\n",
+        },
+    )
+    gateway = StubGateway(before)
+    planner = Planner(gateway, AUTH, now=lambda: NOW)
+
+    if method == "update":
+        plan = planner.update("task_synthetic", {"summary": "After"})
+    elif method == "assign":
+        plan = planner.assign("task_synthetic", ("open_id:ou_synthetic",))
+    else:
+        plan = planner.complete("task_synthetic")
+
+    assert plan.observed_before == before.to_state()
+    assert plan.precondition_fingerprint == before.fingerprint()
