@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "feishu-task-cli"
-version = "0.1.1"
+version = "0.1.2"
 description = "Agent-native, review-gated Feishu Task CLI"
 readme = "README.md"
 license = "MIT"

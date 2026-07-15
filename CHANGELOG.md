@@ -2,6 +2,19 @@
 
 All notable changes to this project are documented here.
 
+## [0.1.2] - 2026-07-15
+
+### Fixed
+
+- Generate `SHA256SUMS` with distribution basenames so the same manifest verifies both the
+  nested workflow artifact and flat GitHub Release downloads.
+
+### Release note
+
+- The `v0.1.1` automated release and attestations succeeded, but its public `SHA256SUMS` paths
+  could not be verified directly after downloading the three GitHub Release assets into one
+  directory. The immutable `v0.1.1` tag and assets are not modified.
+
 ## [0.1.1] - 2026-07-15
 
 ### Fixed
@@ -34,5 +47,6 @@ All notable changes to this project are documented here.
 - Mutations fail closed on stale state, AuthContext mismatch, replay, concurrent execution, and
   invalid or expired review artifacts.
 
+[0.1.2]: https://github.com/Alex-ghost599/feishu-task-cli/releases/tag/v0.1.2
 [0.1.1]: https://github.com/Alex-ghost599/feishu-task-cli/releases/tag/v0.1.1
 [0.1.0]: https://github.com/Alex-ghost599/feishu-task-cli/releases/tag/v0.1.0

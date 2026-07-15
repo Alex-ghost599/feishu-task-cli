@@ -9,7 +9,7 @@ import yaml
 from feishu_task_cli import __version__
 
 ROOT = Path(__file__).resolve().parents[2]
-RELEASE_VERSION = "0.1.1"
+RELEASE_VERSION = "0.1.2"
 
 
 def test_release_version_is_consistent_across_public_metadata() -> None:
@@ -23,6 +23,9 @@ def test_release_version_is_consistent_across_public_metadata() -> None:
     assert "v0.1.0` tag workflow failed before the build step" in changelog
     assert "created no GitHub Release or release assets" in changelog
     assert "`v0.1.1` is the first complete release candidate" in changelog
+    assert "v0.1.1` automated release and attestations succeeded" in changelog
+    assert "public `SHA256SUMS` paths" in changelog
+    assert "could not be verified directly" in changelog
 
 
 def _release_workflow() -> dict[str, object]:
@@ -115,7 +118,8 @@ def test_release_artifact_has_one_validated_producer_and_no_pypi_rebuild() -> No
     assert "twine check release/packages/*.whl release/packages/*.tar.gz" in release_text
     assert '"$SMOKE_ENV/bin/feishu-task" --help' in release_text
     assert "sha256sum" in release_text
-    assert "sha256sum -c SHA256SUMS" in publish_text
+    assert "cd release/packages" in publish_text
+    assert "sha256sum -c ../SHA256SUMS" in publish_text
     assert "twine check" in publish_text
     assert "uv build" not in publish_text
     assert not any("checkout@" in step.get("uses", "") for step in publish_steps)
@@ -169,6 +173,58 @@ def test_release_process_forbids_reusing_failed_tags() -> None:
 
     assert "Never move, delete, or reuse a failed release tag" in process
     assert "use the next patch" in process
+
+
+def test_release_process_requires_ancestry_only_main_sync() -> None:
+    process = " ".join((ROOT / "docs/release-process.md").read_text(encoding="utf-8").split())
+
+    assert "zero-file ancestry-only" in process
+    assert "`main` → `develop`" in process
+    assert "validation-approved normal merge" in process
+    assert "Product, documentation, and bug-fix PRs remain squash-merged" in process
+    assert "Never substitute marker commits" in process
+    assert "force-pushes" in process
+    assert "moved tags" in process
+
+
+def test_release_process_requires_a_fail_safe_ancestry_sync_window() -> None:
+    process = " ".join((ROOT / "docs/release-process.md").read_text(encoding="utf-8").split())
+
+    # The approval must bind both policy and object identity before any setting changes.
+    assert "machine-readable repository settings snapshot" in process
+    assert "machine-readable branch-protection snapshots" in process
+    assert "exact `main`, `develop`, and PR head commit IDs" in process
+    assert "exact tree IDs" in process
+
+    # The exception is deliberately two switches wide; every other guard stays fixed.
+    assert "`allow_merge_commit=true`" in process
+    assert "`develop.required_linear_history=false`" in process
+    assert "required checks and strictness" in process
+    assert "PR review requirements" in process
+    assert "administrator enforcement" in process
+    assert "conversation resolution" in process
+    assert "force-push and deletion protection" in process
+    assert "all `main` protection" in process
+
+    # Restore happens before success/failure handling can leave the window open.
+    assert "restore-first" in process
+    assert "success, failure, or timeout" in process
+    assert "trap/finally" in process
+    assert "`allow_merge_commit=false`" in process
+    assert "`develop.required_linear_history=true`" in process
+
+    # Readback and graph/tree postconditions close the exception.
+    assert "read back the complete repository and branch-protection snapshots" in process
+    assert "zero changed files" in process
+    assert "unchanged tree ID" in process
+    assert "both pre-window commits are ancestors" in process
+    assert "remote task branch remains present" in process
+
+    # This cannot become a general-purpose escape hatch or overlap later work.
+    assert "validation-approved, zero-file ancestry PR" in process
+    assert "Product, documentation, and bug-fix PRs remain squash-merged" in process
+    assert "delete branches" in process
+    assert "No later release or bug-fix work may begin" in process
 
 
 def test_release_workflow_pins_every_action_to_an_immutable_sha() -> None:
