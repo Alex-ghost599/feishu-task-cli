@@ -1,63 +1,96 @@
 from __future__ import annotations
 
 import os
-import re
 import stat
 from collections.abc import Mapping
+from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TextIO
 from urllib.parse import urlsplit
 
 import yaml
 from pydantic import SecretStr
 
 DEFAULT_API_ORIGIN = "https://open.feishu.cn"
-DEFAULT_OAUTH_SCOPES = ("offline_access", "task:task:write")
 
 
-class UnsafeConfigError(ValueError):
+class ConfigError(ValueError):
+    """Stable invalid-configuration error with no source content."""
+
+
+class UnsafeConfigError(ConfigError):
     """Raised before reading a config file that is not private to this user."""
 
 
-def _read_private_config(path: Path) -> dict[str, object]:
-    parse_failed = False
-    read_failed = False
-    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
-    descriptor = -1
-    open_failed = False
-    try:
+def _try_open(path: Path, flags: int) -> int | None:
+    descriptor: int | None = None
+    with suppress(OSError):
         descriptor = os.open(path, flags)
-    except OSError:
-        open_failed = True
-    if open_failed:
-        raise UnsafeConfigError("secret config must be a current-user regular file")
-    try:
+    return descriptor
+
+
+def _try_fstat(descriptor: int) -> os.stat_result | None:
+    metadata: os.stat_result | None = None
+    with suppress(OSError):
         metadata = os.fstat(descriptor)
-        if not stat.S_ISREG(metadata.st_mode):
-            raise UnsafeConfigError("secret config must be a regular file")
-        if metadata.st_uid != os.getuid():
-            raise UnsafeConfigError("secret config must be owned by the current user")
-        if stat.S_IMODE(metadata.st_mode) != 0o600:
-            raise UnsafeConfigError("secret config must have exact mode 0600")
-        with os.fdopen(descriptor, encoding="utf-8") as handle:
-            descriptor = -1
-            try:
-                loaded = yaml.safe_load(handle) or {}
-            except yaml.YAMLError:
-                parse_failed = True
-                loaded = None
-    except (OSError, UnicodeError):
-        read_failed = True
-        loaded = None
-    finally:
-        if descriptor >= 0:
-            os.close(descriptor)
-    if read_failed:
-        raise ValueError("secret config could not be read")
-    if parse_failed:
-        raise ValueError("secret config could not be parsed")
+    return metadata
+
+
+def _try_fdopen(descriptor: int) -> TextIO | None:
+    handle: TextIO | None = None
+    with suppress(OSError):
+        handle = os.fdopen(descriptor, encoding="utf-8")
+    return handle
+
+
+def _try_load_and_close(handle: TextIO) -> tuple[object, bool]:
+    loaded: object = None
+    failed = False
+    try:
+        with handle:
+            loaded = yaml.safe_load(handle) or {}
+    except (OSError, UnicodeError, yaml.YAMLError):
+        failed = True
+    return loaded, failed
+
+
+def _try_close(descriptor: int) -> bool:
+    failed = False
+    try:
+        os.close(descriptor)
+    except OSError:
+        failed = True
+    return not failed
+
+
+def _read_private_config(path: Path) -> dict[str, object]:
+    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+    descriptor = _try_open(path, flags)
+    if descriptor is None:
+        raise UnsafeConfigError("secret config must be a current-user regular file")
+    metadata = _try_fstat(descriptor)
+    if metadata is None:
+        _try_close(descriptor)
+        raise UnsafeConfigError("secret config safety could not be verified")
+    if not stat.S_ISREG(metadata.st_mode):
+        _try_close(descriptor)
+        raise UnsafeConfigError("secret config must be a regular file")
+    if metadata.st_uid != os.getuid():
+        _try_close(descriptor)
+        raise UnsafeConfigError("secret config must be owned by the current user")
+    if stat.S_IMODE(metadata.st_mode) != 0o600:
+        _try_close(descriptor)
+        raise UnsafeConfigError("secret config must have exact mode 0600")
+    handle = _try_fdopen(descriptor)
+    if handle is None:
+        _try_close(descriptor)
+        raise ConfigError("secret config could not be read or parsed")
+    loaded, load_failed = _try_load_and_close(handle)
+    if load_failed:
+        raise ConfigError("secret config could not be read or parsed")
     if not isinstance(loaded, dict) or not all(isinstance(key, str) for key in loaded):
-        raise ValueError("secret config must contain a string-keyed mapping")
+        raise ConfigError("secret config must contain a string-keyed mapping")
     return loaded
 
 
@@ -65,71 +98,44 @@ def _optional_text(value: object, *, field: str) -> str | None:
     if value is None:
         return None
     if not isinstance(value, str) or not value.strip():
-        raise ValueError(f"{field} must be a non-empty string")
+        raise ConfigError(f"{field} must be a non-empty string")
     return value.strip()
 
 
 def _origin(value: object) -> str:
+    message = "FEISHU_API_ORIGIN must be the official Feishu API origin"
     if not isinstance(value, str):
-        raise ValueError("FEISHU_API_ORIGIN must be an HTTPS origin without a path")
-    parsed = urlsplit(value)
+        raise ConfigError(message)
+    parse_failed = False
+    parsed = None
+    hostname = None
+    port = None
+    try:
+        parsed = urlsplit(value)
+        hostname = parsed.hostname
+        port = parsed.port
+    except ValueError:
+        parse_failed = True
+    if parse_failed or parsed is None:
+        raise ConfigError(message)
     if (
         parsed.scheme != "https"
-        or not parsed.hostname
+        or hostname != "open.feishu.cn"
         or parsed.username is not None
         or parsed.password is not None
-        or parsed.path not in ("", "/")
+        or parsed.path != ""
         or parsed.query
         or parsed.fragment
     ):
-        raise ValueError("FEISHU_API_ORIGIN must be an HTTPS origin without a path")
-    invalid_port = False
-    try:
-        port = parsed.port
-    except ValueError:
-        invalid_port = True
-        port = None
-    if invalid_port:
-        raise ValueError("FEISHU_API_ORIGIN must be an HTTPS origin without a path")
-    host = parsed.hostname.lower()
-    return f"https://{host}{f':{port}' if port is not None else ''}"
+        raise ConfigError(message)
+    if port is not None:
+        raise ConfigError(message)
+    return DEFAULT_API_ORIGIN
 
 
-def _redirect_uri(value: object) -> str | None:
-    text = _optional_text(value, field="oauth_redirect_uri")
-    if text is None:
-        return None
-    parsed = urlsplit(text)
-    try:
-        port = parsed.port
-    except ValueError:
-        port = None
-    if (
-        parsed.scheme != "http"
-        or parsed.hostname != "127.0.0.1"
-        or port is None
-        or port == 0
-        or parsed.username is not None
-        or parsed.password is not None
-        or parsed.path in ("", "/")
-        or parsed.query
-        or parsed.fragment
-    ):
-        raise ValueError(
-            "FEISHU_OAUTH_REDIRECT_URI must be an exact http://127.0.0.1:<port>/<path> URL"
-        )
-    return f"http://127.0.0.1:{port}{parsed.path}"
-
-
-def _scopes(value: object) -> tuple[str, ...]:
-    text = _optional_text(value, field="oauth_scopes")
-    requested = set(DEFAULT_OAUTH_SCOPES if text is None else text.split())
-    requested.add("offline_access")
-    if len(requested) > 50 or any(
-        not re.fullmatch(r"[A-Za-z0-9._:-]+", scope) for scope in requested
-    ):
-        raise ValueError("FEISHU_OAUTH_SCOPES must contain at most 50 valid scope names")
-    return tuple(sorted(requested))
+def validate_api_origin(value: object) -> str:
+    """Return the one origin to which this Feishu-only project may send credentials."""
+    return _origin(value)
 
 
 @dataclass(frozen=True)
@@ -140,10 +146,23 @@ class Settings:
     app_id: str | None = None
     tenant_id: str | None = None
     account_id: str | None = None
-    oauth_redirect_uri: str | None = None
-    oauth_scopes: tuple[str, ...] = DEFAULT_OAUTH_SCOPES
     app_secret: SecretStr | None = None
     user_access_token: SecretStr | None = None
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "api_origin", _origin(self.api_origin))
+        for field_name in ("app_id", "tenant_id", "account_id"):
+            value = getattr(self, field_name)
+            if value is not None:
+                object.__setattr__(
+                    self,
+                    field_name,
+                    _optional_text(value, field=field_name),
+                )
+        for field_name in ("app_secret", "user_access_token"):
+            value = getattr(self, field_name)
+            if value is not None and not isinstance(value, SecretStr):
+                raise ConfigError(f"{field_name} must use a secret wrapper")
 
     @classmethod
     def load(
@@ -171,10 +190,6 @@ class Settings:
             account_id=_optional_text(
                 selected("FEISHU_ACCOUNT_ID", "account_id"), field="account_id"
             ),
-            oauth_redirect_uri=_redirect_uri(
-                selected("FEISHU_OAUTH_REDIRECT_URI", "oauth_redirect_uri")
-            ),
-            oauth_scopes=_scopes(selected("FEISHU_OAUTH_SCOPES", "oauth_scopes")),
             app_secret=SecretStr(app_secret) if app_secret is not None else None,
             user_access_token=(
                 SecretStr(user_access_token) if user_access_token is not None else None
