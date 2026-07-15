@@ -51,6 +51,9 @@ def test_recursive_redaction_covers_headers_json_text_logs_and_debug_hook(
     assert access not in rendered
     assert nested not in rendered
     assert "[REDACTED]" in rendered
+    assert "Feishu HTTP event payload: [REDACTED]" in caplog.text
+    assert "Authorization" not in caplog.text
+    assert "refresh_token" not in caplog.text
 
 
 def test_redact_recursively_preserves_non_secret_structure() -> None:

@@ -132,7 +132,7 @@ class FeishuClient:
 
     def _emit(self, event: Mapping[str, object]) -> None:
         safe = cast(dict[str, object], redact(event, secrets=(self._access_token,)))
-        LOGGER.debug("Feishu HTTP event: %s", safe)
+        LOGGER.debug("Feishu HTTP event payload: %s", REDACTED)
         if self._debug_hook is not None:
             self._debug_hook(safe)
 
