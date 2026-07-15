@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import hashlib
 from datetime import UTC, datetime, timedelta
 
 import pytest
 from pydantic import ValidationError
 
 import feishu_task_cli.artifacts.base as artifact_base
+from feishu_task_cli.artifacts.canonical import canonical_bytes
 from feishu_task_cli.artifacts.plan import (
     Action,
     AssigneeIdentifierType,
@@ -50,6 +52,7 @@ def plan(context: AuthContext) -> PlanV1:
 
 
 def existing_task_plan(**overrides: object) -> PlanV1:
+    observed_before = {"guid": "task_example", "summary": "Original synthetic example"}
     values: dict[str, object] = {
         "created_at": NOW,
         "tool_version": "0.0.0",
@@ -59,8 +62,8 @@ def existing_task_plan(**overrides: object) -> PlanV1:
         "requested_fields": {"summary": "Updated synthetic example"},
         "auth_context": auth_context(),
         "expires_at": NOW + timedelta(minutes=15),
-        "observed_before": {"summary": "Original synthetic example"},
-        "precondition_fingerprint": "6" * 64,
+        "observed_before": observed_before,
+        "precondition_fingerprint": hashlib.sha256(canonical_bytes(observed_before)).hexdigest(),
     }
     values.update(overrides)
     return PlanV1.build(**values)
@@ -146,6 +149,71 @@ def test_create_rejects_existing_task_precondition() -> None:
     payload.pop("plan_hash")
     with pytest.raises(ValidationError, match="create plan must not"):
         PlanV1.build(**payload)
+
+
+@pytest.mark.parametrize(
+    ("action", "requested_fields", "assignees"),
+    [
+        (Action.CREATE, {}, ()),
+        (Action.UPDATE, {}, ()),
+        (Action.UPDATE, {"owner": "unexpected"}, ()),
+        (Action.COMPLETE, {"summary": "not completion"}, ()),
+        (
+            Action.UPDATE,
+            {"summary": "Updated"},
+            (AssigneeRef(identifier_type=AssigneeIdentifierType.OPEN_ID, identifier="ou_one"),),
+        ),
+    ],
+)
+def test_plan_rejects_action_specific_semantic_bypasses(
+    action: Action,
+    requested_fields: dict[str, object],
+    assignees: tuple[AssigneeRef, ...],
+) -> None:
+    values = existing_task_plan().model_dump(exclude={"plan_hash"})
+    values.update(action=action, requested_fields=requested_fields, assignees=assignees)
+    if action is Action.CREATE:
+        values.update(
+            target=TaskTarget(tasklist_guid="tasklist_example"),
+            observed_before=None,
+            precondition_fingerprint=None,
+        )
+
+    with pytest.raises(ValidationError):
+        PlanV1.build(**values)
+
+
+def test_plan_rejects_more_than_50_or_noncanonical_assignees() -> None:
+    values = plan(auth_context()).model_dump(exclude={"plan_hash"})
+    values["assignees"] = tuple(
+        AssigneeRef(
+            identifier_type=AssigneeIdentifierType.OPEN_ID,
+            identifier=f"ou_{index}",
+        )
+        for index in range(51)
+    )
+
+    with pytest.raises(ValidationError, match="50"):
+        PlanV1.build(**values)
+
+    values["assignees"] = (
+        {"identifier_type": AssigneeIdentifierType.OPEN_ID, "identifier": "ou internal"},
+    )
+    with pytest.raises(ValidationError, match="canonical"):
+        PlanV1.build(**values)
+
+
+def test_assignee_ref_rejects_surrounding_identifier_whitespace() -> None:
+    with pytest.raises(ValidationError, match="canonical"):
+        AssigneeRef(
+            identifier_type=AssigneeIdentifierType.OPEN_ID,
+            identifier="  ou_example  ",
+        )
+
+
+def test_plan_binds_observed_before_to_precondition_fingerprint() -> None:
+    with pytest.raises(ValidationError, match="observed_before"):
+        existing_task_plan(precondition_fingerprint="6" * 64)
 
 
 def test_supplied_hash_must_match_and_use_sha256_shape() -> None:
