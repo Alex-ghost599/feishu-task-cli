@@ -3,9 +3,9 @@ from __future__ import annotations
 import re
 from datetime import datetime
 from enum import StrEnum
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal, Self
 
-from pydantic import Field, ValidationInfo, field_validator, model_validator
+from pydantic import Field, field_validator, model_validator
 
 from feishu_task_cli.artifacts.base import (
     ArtifactV1,
@@ -13,8 +13,10 @@ from feishu_task_cli.artifacts.base import (
     NonEmptyString,
     StrictModel,
     UtcDateTime,
-    bind_hash,
+    build_hashed_artifact,
 )
+from feishu_task_cli.artifacts.canonical import artifact_hash
+from feishu_task_cli.errors import ArtifactIntegrityError
 
 Fingerprint = Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")]
 DisplayFingerprint = Annotated[str, Field(pattern=r"^[0-9a-f]{12}$")]
@@ -97,8 +99,7 @@ class ValidationFinding(StrictModel):
     message: NonEmptyString
 
 
-class PlanV1(ArtifactV1):
-    hash_field = "plan_hash"
+class PlanContentV1(ArtifactV1):
     artifact_type: Literal["plan"] = "plan"
     plan_id: NonEmptyString
     action: Action
@@ -111,7 +112,6 @@ class PlanV1(ArtifactV1):
     expires_at: UtcDateTime
     observed_before: dict[str, JsonValueNoFloat] | None = None
     precondition_fingerprint: Fingerprint | None = None
-    plan_hash: ArtifactHash
 
     @field_validator("expires_at")
     @classmethod
@@ -119,7 +119,7 @@ class PlanV1(ArtifactV1):
         return cls.require_utc(value)
 
     @model_validator(mode="after")
-    def validate_and_hash(self, info: ValidationInfo) -> PlanV1:
+    def validate_action_requirements(self) -> PlanContentV1:
         if self.expires_at <= self.created_at:
             raise ValueError("expires_at must be later than created_at")
         if self.action is Action.CREATE:
@@ -137,4 +137,18 @@ class PlanV1(ArtifactV1):
                 )
         if self.action is Action.ASSIGN and not self.assignees:
             raise ValueError("assign plan requires at least one assignee")
-        return bind_hash(self, self.hash_field, info)
+        return self
+
+
+class PlanV1(PlanContentV1):
+    plan_hash: ArtifactHash
+
+    @classmethod
+    def build(cls, **data: Any) -> Self:
+        return build_hashed_artifact(cls, PlanContentV1.model_validate(data), "plan_hash")
+
+    @model_validator(mode="after")
+    def verify_hash(self) -> PlanV1:
+        if self.plan_hash != artifact_hash(self, hash_field="plan_hash"):
+            raise ArtifactIntegrityError("plan_hash does not match canonical artifact content")
+        return self
