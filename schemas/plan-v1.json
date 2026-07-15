@@ -25,6 +25,7 @@
         "display_name": {
           "anyOf": [
             {
+              "minLength": 1,
               "type": "string"
             },
             {
@@ -35,6 +36,7 @@
           "title": "Display Name"
         },
         "identifier": {
+          "minLength": 1,
           "title": "Identifier",
           "type": "string"
         },
@@ -73,6 +75,7 @@
           "type": "string"
         },
         "api_origin": {
+          "pattern": "^https://[A-Za-z0-9.-]+(?::[0-9]+)?$",
           "title": "Api Origin",
           "type": "string"
         },
@@ -120,13 +123,41 @@
       "title": "FindingSeverity",
       "type": "string"
     },
-    "JsonValue": {},
+    "JsonValueNoFloat": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "integer"
+        },
+        {
+          "type": "boolean"
+        },
+        {
+          "items": {
+            "$ref": "#/$defs/JsonValueNoFloat"
+          },
+          "type": "array"
+        },
+        {
+          "additionalProperties": {
+            "$ref": "#/$defs/JsonValueNoFloat"
+          },
+          "type": "object"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
     "TaskTarget": {
       "additionalProperties": false,
       "properties": {
         "task_guid": {
           "anyOf": [
             {
+              "minLength": 1,
               "type": "string"
             },
             {
@@ -139,6 +170,7 @@
         "tasklist_guid": {
           "anyOf": [
             {
+              "minLength": 1,
               "type": "string"
             },
             {
@@ -200,11 +232,13 @@
     },
     "created_at": {
       "format": "date-time",
+      "pattern": "^(?:.*Z|.*[+]00:00)$",
       "title": "Created At",
       "type": "string"
     },
     "expires_at": {
       "format": "date-time",
+      "pattern": "^(?:.*Z|.*[+]00:00)$",
       "title": "Expires At",
       "type": "string"
     },
@@ -212,7 +246,7 @@
       "anyOf": [
         {
           "additionalProperties": {
-            "$ref": "#/$defs/JsonValue"
+            "$ref": "#/$defs/JsonValueNoFloat"
           },
           "type": "object"
         },
@@ -224,11 +258,12 @@
       "title": "Observed Before"
     },
     "plan_hash": {
-      "default": "",
+      "pattern": "^[0-9a-f]{64}$",
       "title": "Plan Hash",
       "type": "string"
     },
     "plan_id": {
+      "minLength": 1,
       "title": "Plan Id",
       "type": "string"
     },
@@ -247,7 +282,7 @@
     },
     "requested_fields": {
       "additionalProperties": {
-        "$ref": "#/$defs/JsonValue"
+        "$ref": "#/$defs/JsonValueNoFloat"
       },
       "title": "Requested Fields",
       "type": "object"
@@ -270,6 +305,7 @@
       "$ref": "#/$defs/TaskTarget"
     },
     "tool_version": {
+      "minLength": 1,
       "title": "Tool Version",
       "type": "string"
     },
@@ -290,7 +326,8 @@
     "target",
     "requested_fields",
     "auth_context",
-    "expires_at"
+    "expires_at",
+    "plan_hash"
   ],
   "title": "PlanV1",
   "type": "object"

@@ -34,6 +34,7 @@
           "type": "string"
         },
         "api_origin": {
+          "pattern": "^https://[A-Za-z0-9.-]+(?::[0-9]+)?$",
           "title": "Api Origin",
           "type": "string"
         },
@@ -80,7 +81,34 @@
       "title": "DeclaredReviewRelationship",
       "type": "string"
     },
-    "JsonValue": {},
+    "JsonValueNoFloat": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "integer"
+        },
+        {
+          "type": "boolean"
+        },
+        {
+          "items": {
+            "$ref": "#/$defs/JsonValueNoFloat"
+          },
+          "type": "array"
+        },
+        {
+          "additionalProperties": {
+            "$ref": "#/$defs/JsonValueNoFloat"
+          },
+          "type": "object"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
     "Outcome": {
       "enum": [
         "verified",
@@ -101,6 +129,7 @@
     "api_request_id": {
       "anyOf": [
         {
+          "minLength": 1,
           "type": "string"
         },
         {
@@ -121,11 +150,13 @@
     },
     "completed_at": {
       "format": "date-time",
+      "pattern": "^(?:.*Z|.*[+]00:00)$",
       "title": "Completed At",
       "type": "string"
     },
     "created_at": {
       "format": "date-time",
+      "pattern": "^(?:.*Z|.*[+]00:00)$",
       "title": "Created At",
       "type": "string"
     },
@@ -133,6 +164,7 @@
       "$ref": "#/$defs/DeclaredReviewRelationship"
     },
     "executor_id": {
+      "minLength": 1,
       "title": "Executor Id",
       "type": "string"
     },
@@ -146,7 +178,7 @@
     },
     "observed_state": {
       "additionalProperties": {
-        "$ref": "#/$defs/JsonValue"
+        "$ref": "#/$defs/JsonValueNoFloat"
       },
       "title": "Observed State",
       "type": "object"
@@ -163,26 +195,29 @@
       "$ref": "#/$defs/Outcome"
     },
     "plan_hash": {
+      "pattern": "^[0-9a-f]{64}$",
       "title": "Plan Hash",
       "type": "string"
     },
     "receipt_hash": {
-      "default": "",
+      "pattern": "^[0-9a-f]{64}$",
       "title": "Receipt Hash",
       "type": "string"
     },
     "requested_state": {
       "additionalProperties": {
-        "$ref": "#/$defs/JsonValue"
+        "$ref": "#/$defs/JsonValueNoFloat"
       },
       "title": "Requested State",
       "type": "object"
     },
     "review_hash": {
+      "pattern": "^[0-9a-f]{64}$",
       "title": "Review Hash",
       "type": "string"
     },
     "reviewer_id": {
+      "minLength": 1,
       "title": "Reviewer Id",
       "type": "string"
     },
@@ -194,12 +229,14 @@
     },
     "started_at": {
       "format": "date-time",
+      "pattern": "^(?:.*Z|.*[+]00:00)$",
       "title": "Started At",
       "type": "string"
     },
     "task_guid": {
       "anyOf": [
         {
+          "minLength": 1,
           "type": "string"
         },
         {
@@ -210,6 +247,7 @@
       "title": "Task Guid"
     },
     "tool_version": {
+      "minLength": 1,
       "title": "Tool Version",
       "type": "string"
     }
@@ -226,7 +264,8 @@
     "auth_context",
     "started_at",
     "completed_at",
-    "outcome"
+    "outcome",
+    "receipt_hash"
   ],
   "title": "ReceiptV1",
   "type": "object"

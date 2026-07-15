@@ -5,12 +5,20 @@ from datetime import datetime
 from enum import StrEnum
 from typing import Annotated, Literal
 
-from pydantic import Field, JsonValue, field_validator, model_validator
+from pydantic import Field, ValidationInfo, field_validator, model_validator
 
-from feishu_task_cli.artifacts.base import ArtifactV1, StrictModel, bind_hash
+from feishu_task_cli.artifacts.base import (
+    ArtifactV1,
+    JsonValueNoFloat,
+    NonEmptyString,
+    StrictModel,
+    UtcDateTime,
+    bind_hash,
+)
 
 Fingerprint = Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")]
 DisplayFingerprint = Annotated[str, Field(pattern=r"^[0-9a-f]{12}$")]
+ArtifactHash = Fingerprint
 
 
 class Action(StrEnum):
@@ -33,7 +41,10 @@ class FindingSeverity(StrEnum):
 
 
 class AuthContext(StrictModel):
-    api_origin: str
+    api_origin: Annotated[
+        str,
+        Field(pattern=r"^https://[A-Za-z0-9.-]+(?::[0-9]+)?$"),
+    ]
     app_id_fingerprint: Fingerprint
     tenant_fingerprint: Fingerprint
     account_fingerprint: Fingerprint
@@ -64,8 +75,8 @@ class AuthContext(StrictModel):
 
 
 class TaskTarget(StrictModel):
-    task_guid: str | None = None
-    tasklist_guid: str | None = None
+    task_guid: NonEmptyString | None = None
+    tasklist_guid: NonEmptyString | None = None
 
     @model_validator(mode="after")
     def require_target(self) -> TaskTarget:
@@ -76,8 +87,8 @@ class TaskTarget(StrictModel):
 
 class AssigneeRef(StrictModel):
     identifier_type: AssigneeIdentifierType
-    identifier: str
-    display_name: str | None = None
+    identifier: NonEmptyString
+    display_name: NonEmptyString | None = None
 
 
 class ValidationFinding(StrictModel):
@@ -87,19 +98,20 @@ class ValidationFinding(StrictModel):
 
 
 class PlanV1(ArtifactV1):
+    hash_field = "plan_hash"
     artifact_type: Literal["plan"] = "plan"
-    plan_id: str
+    plan_id: NonEmptyString
     action: Action
     target: TaskTarget
-    requested_fields: dict[str, JsonValue]
+    requested_fields: dict[str, JsonValueNoFloat]
     assignees: tuple[AssigneeRef, ...] = ()
     validation_findings: tuple[ValidationFinding, ...] = ()
     required_scopes: tuple[str, ...] = ()
     auth_context: AuthContext
-    expires_at: datetime
-    observed_before: dict[str, JsonValue] | None = None
+    expires_at: UtcDateTime
+    observed_before: dict[str, JsonValueNoFloat] | None = None
     precondition_fingerprint: Fingerprint | None = None
-    plan_hash: str = ""
+    plan_hash: ArtifactHash
 
     @field_validator("expires_at")
     @classmethod
@@ -107,7 +119,22 @@ class PlanV1(ArtifactV1):
         return cls.require_utc(value)
 
     @model_validator(mode="after")
-    def validate_and_hash(self) -> PlanV1:
+    def validate_and_hash(self, info: ValidationInfo) -> PlanV1:
         if self.expires_at <= self.created_at:
             raise ValueError("expires_at must be later than created_at")
-        return bind_hash(self, "plan_hash")
+        if self.action is Action.CREATE:
+            if self.target.task_guid is not None:
+                raise ValueError("create plan must not target an existing task_guid")
+            if self.observed_before is not None or self.precondition_fingerprint is not None:
+                raise ValueError("create plan must not contain an existing-task precondition")
+        else:
+            if self.target.task_guid is None:
+                raise ValueError(f"{self.action.value} plan requires target.task_guid")
+            if self.observed_before is None or self.precondition_fingerprint is None:
+                raise ValueError(
+                    f"{self.action.value} plan requires observed_before and "
+                    "precondition_fingerprint"
+                )
+        if self.action is Action.ASSIGN and not self.assignees:
+            raise ValueError("assign plan requires at least one assignee")
+        return bind_hash(self, self.hash_field, info)

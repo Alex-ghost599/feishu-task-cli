@@ -39,17 +39,20 @@
     },
     "created_at": {
       "format": "date-time",
+      "pattern": "^(?:.*Z|.*[+]00:00)$",
       "title": "Created At",
       "type": "string"
     },
     "expires_at": {
       "format": "date-time",
+      "pattern": "^(?:.*Z|.*[+]00:00)$",
       "title": "Expires At",
       "type": "string"
     },
     "intended_executor_id": {
       "anyOf": [
         {
+          "minLength": 1,
           "type": "string"
         },
         {
@@ -60,6 +63,7 @@
       "title": "Intended Executor Id"
     },
     "plan_hash": {
+      "pattern": "^[0-9a-f]{64}$",
       "title": "Plan Hash",
       "type": "string"
     },
@@ -72,11 +76,12 @@
       "type": "array"
     },
     "review_hash": {
-      "default": "",
+      "pattern": "^[0-9a-f]{64}$",
       "title": "Review Hash",
       "type": "string"
     },
     "reviewer_id": {
+      "minLength": 1,
       "title": "Reviewer Id",
       "type": "string"
     },
@@ -87,6 +92,7 @@
       "type": "string"
     },
     "tool_version": {
+      "minLength": 1,
       "title": "Tool Version",
       "type": "string"
     },
@@ -108,7 +114,8 @@
     "plan_hash",
     "reviewer_id",
     "verdict",
-    "expires_at"
+    "expires_at",
+    "review_hash"
   ],
   "title": "ReviewV1",
   "type": "object"

@@ -67,6 +67,7 @@
     },
     "created_at": {
       "format": "date-time",
+      "pattern": "^(?:.*Z|.*[+]00:00)$",
       "title": "Created At",
       "type": "string"
     },
@@ -95,7 +96,7 @@
       "title": "Max Review Age Seconds"
     },
     "policy_hash": {
-      "default": "",
+      "pattern": "^[0-9a-f]{64}$",
       "title": "Policy Hash",
       "type": "string"
     },
@@ -129,13 +130,15 @@
       "type": "string"
     },
     "tool_version": {
+      "minLength": 1,
       "title": "Tool Version",
       "type": "string"
     }
   },
   "required": [
     "created_at",
-    "tool_version"
+    "tool_version",
+    "policy_hash"
   ],
   "title": "PolicyV1",
   "type": "object"

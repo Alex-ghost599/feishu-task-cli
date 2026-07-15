@@ -1,0 +1,32 @@
+[
+  {
+    "name": "complete-plan-v1",
+    "artifact_type": "plan",
+    "input": {
+      "created_at": "2026-01-02T03:04:05Z",
+      "tool_version": "0.0.0",
+      "plan_id": "plan_example_001",
+      "action": "create",
+      "target": {
+        "tasklist_guid": "tasklist_example"
+      },
+      "requested_fields": {
+        "summary": "Prepare a synthetic example"
+      },
+      "auth_context": {
+        "api_origin": "https://open.feishu.cn",
+        "app_id_fingerprint": "1111111111111111111111111111111111111111111111111111111111111111",
+        "tenant_fingerprint": "2222222222222222222222222222222222222222222222222222222222222222",
+        "account_fingerprint": "3333333333333333333333333333333333333333333333333333333333333333",
+        "acting_user_fingerprint": "4444444444444444444444444444444444444444444444444444444444444444",
+        "app_id_display": "111111111111",
+        "tenant_display": "222222222222",
+        "account_display": "333333333333",
+        "acting_user_display": "444444444444"
+      },
+      "expires_at": "2026-01-02T03:19:05Z"
+    },
+    "canonical": "{\"action\":\"create\",\"artifact_type\":\"plan\",\"assignees\":[],\"auth_context\":{\"account_display\":\"333333333333\",\"account_fingerprint\":\"3333333333333333333333333333333333333333333333333333333333333333\",\"acting_user_display\":\"444444444444\",\"acting_user_fingerprint\":\"4444444444444444444444444444444444444444444444444444444444444444\",\"api_origin\":\"https://open.feishu.cn\",\"app_id_display\":\"111111111111\",\"app_id_fingerprint\":\"1111111111111111111111111111111111111111111111111111111111111111\",\"tenant_display\":\"222222222222\",\"tenant_fingerprint\":\"2222222222222222222222222222222222222222222222222222222222222222\"},\"created_at\":\"2026-01-02T03:04:05Z\",\"expires_at\":\"2026-01-02T03:19:05Z\",\"observed_before\":null,\"plan_id\":\"plan_example_001\",\"precondition_fingerprint\":null,\"requested_fields\":{\"summary\":\"Prepare a synthetic example\"},\"required_scopes\":[],\"schema_version\":\"1\",\"target\":{\"task_guid\":null,\"tasklist_guid\":\"tasklist_example\"},\"tool_version\":\"0.0.0\",\"validation_findings\":[]}",
+    "sha256": "7588043057cca521ede835898c10707af354623a9835dc41c9eb81652e262476"
+  }
+]
