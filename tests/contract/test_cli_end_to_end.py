@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import errno
 import json
 import os
 import stat
+from collections import Counter
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -277,7 +279,7 @@ def test_output_cleanup_failure_keeps_primary_safe_envelope_and_no_residue(
     output = tmp_path / "artifact.json"
     real_open = os.open
     real_close = os.close
-    real_unlink = os.unlink
+    real_fsync = os.fsync
     parent_fd = real_open(tmp_path, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
     opened = [parent_fd]
     close_attempts: list[int] = []
@@ -287,24 +289,28 @@ def test_output_cleanup_failure_keeps_primary_safe_envelope_and_no_residue(
         opened.append(descriptor)
         return descriptor
 
-    def close_then_fail(descriptor: int) -> None:
+    def tracked_close(descriptor: int) -> None:
         close_attempts.append(descriptor)
         real_close(descriptor)
-        raise OSError("sensitive secondary close detail")
 
-    def unlink_then_fail(path: str, *, dir_fd: int | None = None) -> None:
-        real_unlink(path, dir_fd=dir_fd)
-        raise OSError("sensitive secondary unlink detail")
+    def fail_unlink_before_delete(path: str, *, dir_fd: int | None = None) -> None:
+        del path, dir_fd
+        raise OSError(errno.EACCES, "sensitive secondary unlink detail")
+
+    fsync_calls = 0
+
+    def fail_first_fsync(descriptor: int) -> None:
+        nonlocal fsync_calls
+        fsync_calls += 1
+        if fsync_calls == 1:
+            raise OSError("sensitive primary path detail")
+        real_fsync(descriptor)
 
     monkeypatch.setattr(cli, "_open_output_parent", lambda path: parent_fd)
     monkeypatch.setattr(cli.os, "open", tracked_open)
-    monkeypatch.setattr(cli.os, "close", close_then_fail)
-    monkeypatch.setattr(cli.os, "unlink", unlink_then_fail)
-    monkeypatch.setattr(
-        cli.os,
-        "fsync",
-        lambda descriptor: (_ for _ in ()).throw(OSError("sensitive primary path detail")),
-    )
+    monkeypatch.setattr(cli.os, "close", tracked_close)
+    monkeypatch.setattr(cli.os, "unlink", fail_unlink_before_delete)
+    monkeypatch.setattr(cli.os, "fsync", fail_first_fsync)
 
     result = runner.invoke(
         cli.app,
@@ -321,13 +327,18 @@ def test_output_cleanup_failure_keeps_primary_safe_envelope_and_no_residue(
     )
 
     assert result.exit_code == 2
-    assert json.loads(result.stdout)["error"]["code"] == "invalid_input"
+    error = json.loads(result.stdout)["error"]
+    assert error["code"] == "invalid_input"
+    assert error["output_cleanup_status"] == "incomplete_wiped"
     assert str(output) not in result.stdout + result.stderr
     assert "sensitive" not in result.stdout + result.stderr
-    assert sorted(opened) == sorted(close_attempts)
-    assert len(close_attempts) == len(set(close_attempts))
+    assert Counter(opened) == Counter(close_attempts)
     assert not output.exists()
-    assert not list(tmp_path.glob(".*.tmp"))
+    residues = list(tmp_path.glob(".*.tmp"))
+    assert len(residues) == 1
+    assert residues[0].read_bytes() == b""
+    assert stat.S_IMODE(residues[0].stat(follow_symlinks=False).st_mode) == 0o600
+    assert not residues[0].is_symlink()
 
 
 def test_auth_and_execution_status_commands_are_json_and_non_prompting(

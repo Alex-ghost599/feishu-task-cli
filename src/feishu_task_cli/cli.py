@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import errno
 import json
 import os
 import stat
@@ -8,6 +9,7 @@ import uuid
 from collections.abc import Mapping, Sequence
 from contextlib import suppress
 from dataclasses import dataclass
+from enum import StrEnum
 from pathlib import Path
 from typing import Annotated, Any, Protocol, cast
 
@@ -54,23 +56,32 @@ from feishu_task_cli.presentation.next_actions import (
 )
 
 
+class OutputCleanupStatus(StrEnum):
+    """Fixed, non-sensitive status for an output residue that could not be removed."""
+
+    INCOMPLETE_WIPED = "incomplete_wiped"
+    INCOMPLETE_UNVERIFIED = "incomplete_unverified"
+
+
 def _safe_error_envelope(
     code: ErrorCode,
     category: str,
     message: str,
     *,
     retryable: bool = False,
+    output_cleanup_status: OutputCleanupStatus | None = None,
 ) -> dict[str, object]:
-    return {
-        "error": {
-            "category": category,
-            "code": code.value,
-            "message": message,
-            "next_action": next_action_for_error(code).value,
-            "next_action_mapping_version": NEXT_ACTION_MAPPING_VERSION,
-            "retryable": retryable,
-        }
+    error: dict[str, object] = {
+        "category": category,
+        "code": code.value,
+        "message": message,
+        "next_action": next_action_for_error(code).value,
+        "next_action_mapping_version": NEXT_ACTION_MAPPING_VERSION,
+        "retryable": retryable,
     }
+    if output_cleanup_status is not None:
+        error["output_cleanup_status"] = output_cleanup_status.value
+    return {"error": error}
 
 
 class AgentTyperGroup(TyperGroup):
@@ -286,12 +297,82 @@ def _write_all(descriptor: int, content: bytes) -> None:
         remaining = remaining[written:]
 
 
+def _unlink_temporary(temporary_name: str, parent_fd: int) -> bool:
+    """Bound retryable unlink work and confirm whether the name still exists."""
+    for attempt in range(2):
+        try:
+            os.unlink(temporary_name, dir_fd=parent_fd)
+            return True
+        except FileNotFoundError:
+            return True
+        except OSError as error:
+            if error.errno == errno.EINTR and attempt == 0:
+                continue
+            break
+    try:
+        os.stat(temporary_name, dir_fd=parent_fd, follow_symlinks=False)
+    except FileNotFoundError:
+        return True
+    except OSError:
+        pass
+    return False
+
+
+def _wipe_verified_temporary(
+    temporary_name: str,
+    parent_fd: int,
+    expected: os.stat_result | None,
+) -> bool:
+    """Wipe only the exact private regular file created by this process."""
+    if expected is None:
+        return False
+    flags = os.O_WRONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        descriptor = os.open(temporary_name, flags, dir_fd=parent_fd)
+    except OSError:
+        return False
+    owned = {descriptor}
+    try:
+        actual = os.fstat(descriptor)
+        if (actual.st_dev, actual.st_ino) != (expected.st_dev, expected.st_ino):
+            return False
+        if not stat.S_ISREG(actual.st_mode):
+            return False
+        if hasattr(os, "getuid") and actual.st_uid != os.getuid():
+            return False
+        if stat.S_IMODE(actual.st_mode) != 0o600:
+            return False
+        os.ftruncate(descriptor, 0)
+        os.fsync(descriptor)
+        return True
+    except OSError:
+        return False
+    finally:
+        _best_effort_close_all(owned)
+
+
+def _cleanup_temporary(
+    temporary_name: str,
+    parent_fd: int,
+    expected: os.stat_result | None,
+) -> OutputCleanupStatus | None:
+    if _unlink_temporary(temporary_name, parent_fd):
+        return None
+    wiped = _wipe_verified_temporary(temporary_name, parent_fd, expected)
+    if _unlink_temporary(temporary_name, parent_fd):
+        return None
+    if wiped:
+        return OutputCleanupStatus.INCOMPLETE_WIPED
+    return OutputCleanupStatus.INCOMPLETE_UNVERIFIED
+
+
 def _write_atomic(path: Path, content: bytes) -> None:
     path = path.expanduser().absolute()
     parent_fd = _open_output_parent(path)
     temporary_name = f".{path.name}.{uuid.uuid4().hex}.tmp"
     owned = {parent_fd}
     temporary_fd: int | None = None
+    temporary_details: os.stat_result | None = None
     primary: BaseException | None = None
     primary_traceback = None
     try:
@@ -311,6 +392,7 @@ def _write_atomic(path: Path, content: bytes) -> None:
             dir_fd=parent_fd,
         )
         owned.add(temporary_fd)
+        temporary_details = os.fstat(temporary_fd)
         _write_all(temporary_fd, content)
         os.fsync(temporary_fd)
         _close_owned(owned, temporary_fd)
@@ -328,12 +410,13 @@ def _write_atomic(path: Path, content: bytes) -> None:
 
     if temporary_fd is not None:
         _best_effort_close_owned(owned, temporary_fd)
-    with suppress(OSError):
-        os.unlink(temporary_name, dir_fd=parent_fd)
+    cleanup_status = _cleanup_temporary(temporary_name, parent_fd, temporary_details)
     _best_effort_close_owned(owned, parent_fd)
     _best_effort_close_all(owned)
 
     if primary is not None:
+        if cleanup_status is not None:
+            primary.output_cleanup_status = cleanup_status  # type: ignore[attr-defined]
         raise primary.with_traceback(primary_traceback)
 
 
@@ -384,8 +467,15 @@ def _fail(
     exit_code: int,
     *,
     retryable: bool = False,
+    output_cleanup_status: OutputCleanupStatus | None = None,
 ) -> None:
-    envelope = _safe_error_envelope(code, category, message, retryable=retryable)
+    envelope = _safe_error_envelope(
+        code,
+        category,
+        message,
+        retryable=retryable,
+        output_cleanup_status=output_cleanup_status,
+    )
     sys.stdout.buffer.write(_json_bytes(envelope))
     typer.echo(f"error: {code.value}", err=True)
     raise typer.Exit(exit_code)
@@ -460,7 +550,16 @@ def _handle(error: Exception) -> None:
             yaml.YAMLError,
         ),
     ):
-        _fail(ErrorCode.INVALID_INPUT, "input", "Input could not be safely validated.", 2)
+        cleanup_status = getattr(error, "output_cleanup_status", None)
+        if not isinstance(cleanup_status, OutputCleanupStatus):
+            cleanup_status = None
+        _fail(
+            ErrorCode.INVALID_INPUT,
+            "input",
+            "Input could not be safely validated.",
+            2,
+            output_cleanup_status=cleanup_status,
+        )
     if isinstance(error, FeishuTaskError):
         _fail(ErrorCode.OPERATION_FAILED, "operation", "Operation failed safely.", 5)
     _fail(ErrorCode.OPERATION_FAILED, "operation", "Operation failed safely.", 5)
