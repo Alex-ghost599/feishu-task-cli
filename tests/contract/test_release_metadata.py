@@ -15,6 +15,10 @@ RELEASE_VERSION = "0.1.2"
 def test_release_version_is_consistent_across_public_metadata() -> None:
     project = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))["project"]
     changelog = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
+    release_match = re.search(
+        rf"(?ms)^## \[{re.escape(RELEASE_VERSION)}\].*?(?=^## \[|\Z)",
+        changelog,
+    )
 
     assert project["version"] == RELEASE_VERSION
     assert "Development Status :: 3 - Alpha" in project["classifiers"]
@@ -26,6 +30,22 @@ def test_release_version_is_consistent_across_public_metadata() -> None:
     assert "v0.1.1` automated release and attestations succeeded" in changelog
     assert "public `SHA256SUMS` paths" in changelog
     assert "could not be verified directly" in changelog
+    assert release_match is not None
+    release_notes = release_match.group()
+    assert "copyable install-only Agent prompt" in release_notes
+    assert "authorized Task workflow prompt" in release_notes
+    assert "reviewed source of truth for GitHub About metadata" in release_notes
+    assert "synthetic mocked responses" in release_notes
+    assert "no live-tenant validation" in release_notes
+    assert (
+        "metadata deployment remains gated until the annotated `v0.1.2` GitHub Release succeeds"
+        in release_notes
+    )
+    assert not re.search(
+        r"(?:applied|configured|deployed|published) GitHub About metadata",
+        release_notes,
+        flags=re.IGNORECASE,
+    )
 
 
 def _release_workflow() -> dict[str, object]:

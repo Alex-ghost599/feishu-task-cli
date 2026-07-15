@@ -4,6 +4,20 @@ All notable changes to this project are documented here.
 
 ## [0.1.2] - 2026-07-15
 
+### Added
+
+- A copyable install-only Agent prompt pinned to `v0.1.2`, with an isolated `uv tool` path,
+  explicit no-auth/no-write boundaries, and a self-contained machine-readable installation report.
+- A separate authorized Task workflow prompt, repository `AGENTS.md` routing, expanded README
+  guidance, factual badges, and a bounded user-handoff example.
+- A reviewed source of truth for GitHub About metadata and 15 relevant repository topics; public
+  metadata deployment remains gated until the annotated `v0.1.2` GitHub Release succeeds.
+
+### Validation
+
+- Agent onboarding and Task workflow behavior were validated with synthetic mocked responses;
+  this release makes no live-tenant validation claim.
+
 ### Fixed
 
 - Generate `SHA256SUMS` with distribution basenames so the same manifest verifies both the
