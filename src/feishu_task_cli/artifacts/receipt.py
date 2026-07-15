@@ -2,18 +2,20 @@ from __future__ import annotations
 
 from datetime import datetime
 from enum import StrEnum
-from typing import Literal
+from typing import Any, Literal, Self
 
-from pydantic import Field, ValidationInfo, field_validator, model_validator
+from pydantic import Field, field_validator, model_validator
 
 from feishu_task_cli.artifacts.base import (
     ArtifactV1,
     JsonValueNoFloat,
     NonEmptyString,
     UtcDateTime,
-    bind_hash,
+    build_hashed_artifact,
 )
+from feishu_task_cli.artifacts.canonical import artifact_hash
 from feishu_task_cli.artifacts.plan import Action, ArtifactHash, AuthContext, Fingerprint
+from feishu_task_cli.errors import ArtifactIntegrityError
 
 
 class Outcome(StrEnum):
@@ -29,8 +31,7 @@ class DeclaredReviewRelationship(StrEnum):
     INDEPENDENTLY_REVIEWED = "declared_independently_reviewed"
 
 
-class ReceiptV1(ArtifactV1):
-    hash_field = "receipt_hash"
+class ReceiptContentV1(ArtifactV1):
     artifact_type: Literal["receipt"] = "receipt"
     action: Action
     plan_hash: Fingerprint
@@ -48,7 +49,6 @@ class ReceiptV1(ArtifactV1):
     started_at: UtcDateTime
     completed_at: UtcDateTime
     outcome: Outcome
-    receipt_hash: ArtifactHash
 
     @field_validator("started_at", "completed_at")
     @classmethod
@@ -56,7 +56,7 @@ class ReceiptV1(ArtifactV1):
         return cls.require_utc(value)
 
     @model_validator(mode="after")
-    def validate_and_hash(self, info: ValidationInfo) -> ReceiptV1:
+    def validate_receipt(self) -> ReceiptContentV1:
         if self.completed_at < self.started_at:
             raise ValueError("completed_at cannot be earlier than started_at")
         is_self = self.reviewer_id == self.executor_id
@@ -75,4 +75,18 @@ class ReceiptV1(ArtifactV1):
                 raise ValueError("verified receipt requested state must match observed state")
         if self.outcome is Outcome.PARTIAL and not (self.mismatches or self.omitted_fields):
             raise ValueError("partial receipt requires a mismatch or omitted field")
-        return bind_hash(self, self.hash_field, info)
+        return self
+
+
+class ReceiptV1(ReceiptContentV1):
+    receipt_hash: ArtifactHash
+
+    @classmethod
+    def build(cls, **data: Any) -> Self:
+        return build_hashed_artifact(cls, ReceiptContentV1.model_validate(data), "receipt_hash")
+
+    @model_validator(mode="after")
+    def verify_hash(self) -> ReceiptV1:
+        if self.receipt_hash != artifact_hash(self, hash_field="receipt_hash"):
+            raise ArtifactIntegrityError("receipt_hash does not match canonical artifact content")
+        return self

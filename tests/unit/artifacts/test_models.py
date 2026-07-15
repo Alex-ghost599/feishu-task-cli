@@ -5,6 +5,7 @@ from datetime import UTC, datetime, timedelta
 import pytest
 from pydantic import ValidationError
 
+import feishu_task_cli.artifacts.base as artifact_base
 from feishu_task_cli.artifacts.plan import (
     Action,
     AssigneeIdentifierType,
@@ -289,6 +290,15 @@ def test_original_hash_rejects_tampered_artifact() -> None:
 
     with pytest.raises(ValidationError, match="does not match"):
         PlanV1.model_validate(payload)
+
+
+def test_hash_generation_has_no_validation_context_backdoor() -> None:
+    assert not hasattr(artifact_base, "_ARTIFACT_BUILD_TOKEN")
+    payload = plan(auth_context()).model_dump(mode="json")
+    payload["requested_fields"] = {"summary": "tampered"}
+
+    with pytest.raises(ValidationError, match="does not match"):
+        PlanV1.model_validate(payload, context={"artifact_build_token": object()})
 
 
 def test_all_external_artifacts_reject_cleared_or_missing_integrity_hash() -> None:

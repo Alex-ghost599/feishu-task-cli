@@ -2,12 +2,19 @@ from __future__ import annotations
 
 from datetime import datetime
 from enum import StrEnum
-from typing import Literal
+from typing import Any, Literal, Self
 
-from pydantic import ValidationInfo, field_validator, model_validator
+from pydantic import field_validator, model_validator
 
-from feishu_task_cli.artifacts.base import ArtifactV1, NonEmptyString, UtcDateTime, bind_hash
+from feishu_task_cli.artifacts.base import (
+    ArtifactV1,
+    NonEmptyString,
+    UtcDateTime,
+    build_hashed_artifact,
+)
+from feishu_task_cli.artifacts.canonical import artifact_hash
 from feishu_task_cli.artifacts.plan import ArtifactHash, Fingerprint
+from feishu_task_cli.errors import ArtifactIntegrityError
 
 
 class CheckedFact(StrEnum):
@@ -24,8 +31,7 @@ class ReviewVerdict(StrEnum):
     REJECTED = "rejected"
 
 
-class ReviewV1(ArtifactV1):
-    hash_field = "review_hash"
+class ReviewContentV1(ArtifactV1):
     artifact_type: Literal["review"] = "review"
     plan_hash: Fingerprint
     reviewer_id: NonEmptyString
@@ -35,7 +41,6 @@ class ReviewV1(ArtifactV1):
     warnings: tuple[NonEmptyString, ...] = ()
     reasons: tuple[NonEmptyString, ...] = ()
     expires_at: UtcDateTime
-    review_hash: ArtifactHash
 
     @field_validator("expires_at")
     @classmethod
@@ -43,7 +48,21 @@ class ReviewV1(ArtifactV1):
         return cls.require_utc(value)
 
     @model_validator(mode="after")
-    def validate_and_hash(self, info: ValidationInfo) -> ReviewV1:
+    def validate_expiry(self) -> ReviewContentV1:
         if self.expires_at <= self.created_at:
             raise ValueError("expires_at must be later than created_at")
-        return bind_hash(self, self.hash_field, info)
+        return self
+
+
+class ReviewV1(ReviewContentV1):
+    review_hash: ArtifactHash
+
+    @classmethod
+    def build(cls, **data: Any) -> Self:
+        return build_hashed_artifact(cls, ReviewContentV1.model_validate(data), "review_hash")
+
+    @model_validator(mode="after")
+    def verify_hash(self) -> ReviewV1:
+        if self.review_hash != artifact_hash(self, hash_field="review_hash"):
+            raise ArtifactIntegrityError("review_hash does not match canonical artifact content")
+        return self
