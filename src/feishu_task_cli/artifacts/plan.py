@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 from datetime import datetime
 from enum import StrEnum
 from typing import Annotated, Any, Literal, Self
@@ -14,7 +15,11 @@ from feishu_task_cli.artifacts.base import (
     UtcDateTime,
     build_hashed_artifact,
 )
-from feishu_task_cli.artifacts.canonical import artifact_hash
+from feishu_task_cli.artifacts.canonical import artifact_hash, canonical_bytes
+from feishu_task_cli.artifacts.task_semantics import (
+    normalize_assignee_pairs,
+    normalize_task_fields,
+)
 from feishu_task_cli.errors import ArtifactIntegrityError
 
 Fingerprint = Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")]
@@ -103,6 +108,15 @@ class AssigneeRef(StrictModel):
     identifier: NonEmptyString
     display_name: NonEmptyString | None = None
 
+    @field_validator("identifier", mode="before")
+    @classmethod
+    def require_canonical_identifier(cls, value: object) -> object:
+        if isinstance(value, str) and (
+            value != value.strip() or any(character.isspace() for character in value)
+        ):
+            raise ValueError("assignee identifier must use canonical non-whitespace form")
+        return value
+
 
 class ValidationFinding(StrictModel):
     code: NonEmptyString
@@ -148,6 +162,30 @@ class PlanContentV1(ArtifactV1):
                 )
         if self.action is Action.ASSIGN and not self.assignees:
             raise ValueError("assign plan requires at least one assignee")
+
+        normalized_fields = normalize_task_fields(self.action.value, self.requested_fields)
+        if normalized_fields != self.requested_fields:
+            raise ValueError("requested_fields must use canonical Task field values")
+
+        pairs = tuple(
+            (assignee.identifier_type.value, assignee.identifier) for assignee in self.assignees
+        )
+        if normalize_assignee_pairs(pairs) != pairs:
+            raise ValueError("assignees must be unique and use canonical identifiers")
+        if self.action in {Action.UPDATE, Action.COMPLETE} and self.assignees:
+            raise ValueError(f"{self.action.value} plan cannot contain assignees")
+        if self.action is Action.ASSIGN:
+            expected_assignees: list[JsonValueNoFloat] = [
+                {"identifier_type": identifier_type, "identifier": identifier}
+                for identifier_type, identifier in pairs
+            ]
+            if self.requested_fields != {"assignees": expected_assignees}:
+                raise ValueError("assign requested_fields must match authoritative assignees")
+
+        if self.observed_before is not None:
+            observed_fingerprint = hashlib.sha256(canonical_bytes(self.observed_before)).hexdigest()
+            if observed_fingerprint != self.precondition_fingerprint:
+                raise ValueError("observed_before does not match precondition_fingerprint")
         return self
 
 

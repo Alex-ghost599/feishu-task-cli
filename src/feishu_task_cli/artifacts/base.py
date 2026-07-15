@@ -3,19 +3,20 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from typing import Annotated, Literal, TypeVar
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, StringConstraints, field_validator
 from typing_extensions import TypeAliasType
 
 from feishu_task_cli.artifacts.canonical import artifact_hash
 
 NonEmptyString = Annotated[str, Field(min_length=1)]
+PreservedString = Annotated[str, StringConstraints(strip_whitespace=False)]
 UtcDateTime = Annotated[
     datetime,
     Field(json_schema_extra={"pattern": r"^(?:.*Z|.*[+]00:00)$"}),
 ]
 JsonValueNoFloat = TypeAliasType(
     "JsonValueNoFloat",
-    "str | int | bool | None | list[JsonValueNoFloat] | dict[str, JsonValueNoFloat]",
+    "PreservedString | int | bool | None | list[JsonValueNoFloat] | dict[str, JsonValueNoFloat]",
 )
 
 

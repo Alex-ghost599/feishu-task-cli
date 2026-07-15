@@ -4,7 +4,7 @@ from datetime import UTC, datetime
 
 from feishu_task_cli import __version__
 from feishu_task_cli.artifacts.canonical import artifact_hash
-from feishu_task_cli.artifacts.plan import Action, PlanV1
+from feishu_task_cli.artifacts.plan import Action, FindingSeverity, PlanV1
 from feishu_task_cli.artifacts.policy import PolicyV1
 from feishu_task_cli.artifacts.receipt import DeclaredReviewRelationship
 from feishu_task_cli.artifacts.review import CheckedFact, ReviewV1, ReviewVerdict
@@ -83,6 +83,9 @@ def validate_execution_review(
     _require_integrity(plan, "plan_hash", "plan")
     _require_integrity(review, "review_hash", "review")
     _require_integrity(policy, "policy_hash", "policy")
+
+    if any(finding.severity is FindingSeverity.ERROR for finding in plan.validation_findings):
+        raise PolicyRejectedError("plan contains unresolved validation errors")
 
     if review.plan_hash != plan.plan_hash:
         raise PolicyRejectedError("review plan hash does not match the execution plan hash")
