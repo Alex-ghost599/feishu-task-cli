@@ -148,6 +148,25 @@ def test_planner_rejects_invalid_task_field_values(
     assert gateway.get_calls == []
 
 
+@pytest.mark.parametrize(
+    "requested_fields",
+    [
+        {"completed_at": "١٢٣"},
+        {"completed_at": "²"},
+        {"due": {"timestamp": "١٢٣", "is_all_day": False}},
+    ],
+)
+def test_update_rejects_non_ascii_timestamps_before_network(
+    requested_fields: dict[str, object],
+) -> None:
+    gateway = StubGateway(TaskSnapshot(guid="task_synthetic", fields={}))
+    planner = Planner(gateway, AUTH, now=lambda: NOW)
+
+    with pytest.raises(ValueError, match="timestamp"):
+        planner.update("task_synthetic", requested_fields)
+    assert gateway.get_calls == []
+
+
 def test_assignees_are_trimmed_deduplicated_and_limited() -> None:
     gateway = StubGateway(TaskSnapshot(guid="unused", fields={}))
     planner = Planner(gateway, AUTH, now=lambda: NOW)

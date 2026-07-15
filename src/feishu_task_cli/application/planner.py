@@ -25,7 +25,7 @@ def _normalize_timestamp(value: object, *, field_name: str) -> str:
     if isinstance(value, bool) or not isinstance(value, (str, int)):
         raise ValueError(f"{field_name} must be a millisecond timestamp")
     normalized = str(value)
-    if not normalized.isdigit() or len(normalized) > 20:
+    if not normalized.isascii() or not normalized.isdigit() or len(normalized) > 20:
         raise ValueError(f"{field_name} must be a non-negative millisecond timestamp")
     return normalized
 
