@@ -38,7 +38,7 @@ test = [
   "pytest-cov>=6,<8",
   "respx>=0.22,<1",
   "ruff>=0.12,<1",
-  "twine>=6.1,<7",
+  "twine>=6.1,<8",
   "types-PyYAML>=6.0,<7",
 ]
 
